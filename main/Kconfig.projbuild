@@ -1,0 +1,19 @@
+menu "Agent Terminal Configuration"
+
+    config AGENT_WIFI_SSID
+        string "WiFi SSID"
+        default "MyWiFi"
+
+    config AGENT_WIFI_PASS
+        string "WiFi Password"
+        default ""
+
+    config AGENT_WS_URI
+        string "Agent WebSocket URI"
+        default "ws://192.168.1.100:8080/ws"
+
+    config AGENT_DEVICE_NAME
+        string "Device name reported to agent"
+        default "agent-robot-1"
+
+endmenu

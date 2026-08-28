@@ -70,6 +70,9 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
 - 已创建根目录 [`../../../firmware/`](../../../firmware/) 正式 ESP-IDF 工程，project 名为
   `agent_robot_terminal`，首次 ESP-IDF v6.0.2 构建通过。
 - 已固定直接依赖和 transitive lock，同步 device protocol v1.0 三份 fixtures 及 SHA-256。
+- P1 已实现 strict control envelope、256 项 message replay window、capability 序列化、长度前缀
+  pairing/auth transcript、strict base64url 与 PCM frame codec；共享 fixtures 和边界测试均已通过主机测试，
+  对应组件已通过 ESP32-S3 release 构建。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
   “由上游 commit 复现”门仍待上游正式提交后通过。

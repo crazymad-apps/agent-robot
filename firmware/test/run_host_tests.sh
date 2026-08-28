@@ -21,10 +21,53 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    "$FIRMWARE_DIR/components/device_protocol/device_message_replay_window.c" \
+    "$FIRMWARE_DIR/test/host/device_message_replay_window_test.c" \
+    -o "$BUILD_DIR/device_message_replay_window_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
     "$FIRMWARE_DIR/test/host/device_base64url_test.c" \
     -o "$BUILD_DIR/device_base64url_test"
+
+CJSON_DIR="$FIRMWARE_DIR/managed_components/espressif__cjson/cJSON"
+if [[ ! -f "$CJSON_DIR/cJSON.c" ]]; then
+    echo "Managed cJSON source is unavailable; run ./idf.sh build before host tests." >&2
+    exit 1
+fi
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DCJSON_NESTING_LIMIT=64 \
+    -DCJSON_CIRCULAR_LIMIT=1000 \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    -I"$CJSON_DIR" \
+    "$CJSON_DIR/cJSON.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_control_envelope.c" \
+    "$FIRMWARE_DIR/test/host/device_control_envelope_test.c" \
+    -lm \
+    -o "$BUILD_DIR/device_control_envelope_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$FIRMWARE_DIR/components/device_crypto/include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_transcript.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_capabilities.c" \
+    "$FIRMWARE_DIR/test/host/device_transcript_test.c" \
+    -o "$BUILD_DIR/device_transcript_test"
 
 arguments=(
     "$(jq -r '.header_hex' "$FIXTURE")"
@@ -38,6 +81,7 @@ while IFS= read -r invalid_header; do
 done < <(jq -r '.invalid_header_hex[]' "$FIXTURE")
 
 "$BUILD_DIR/device_pcm_frame_test" "${arguments[@]}"
+"$BUILD_DIR/device_message_replay_window_test"
 
 CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
 "$BUILD_DIR/device_base64url_test" \
@@ -51,3 +95,28 @@ CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
     "$(jq -r '.authentication.private_seed' "$CRYPTO_FIXTURE")" 32 \
     "$(jq -r '.authentication.public_key' "$CRYPTO_FIXTURE")" 32 \
     "$(jq -r '.authentication.signature' "$CRYPTO_FIXTURE")" 64
+
+ENVELOPE_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/envelope-v1.json"
+"$BUILD_DIR/device_control_envelope_test" "$(jq -c '.valid_envelope' "$ENVELOPE_FIXTURE")"
+
+CAPABILITY_BITS="$(jq -r '
+    .pairing.capabilities
+    | [.input_text, .input_pcm16_16k_mono, .output_text, .output_pcm16_16k_mono,
+       .playback_cancel, .display_status, .display_transcript]
+    | map(if . then "1" else "0" end)
+    | join("")
+' "$CRYPTO_FIXTURE")"
+"$BUILD_DIR/device_transcript_test" \
+    "$(jq -r '.pairing.associated_data' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.pairing_request_id' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.installation_id' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.certificate_fingerprint' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.device_nonce' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.host_nonce' "$CRYPTO_FIXTURE")" \
+    "$CAPABILITY_BITS" \
+    "$(jq -r '.authentication.transcript' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.connection_id' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.host_nonce' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.device_id' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.device_nonce' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.output_preference' "$CRYPTO_FIXTURE")"

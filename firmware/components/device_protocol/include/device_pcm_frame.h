@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "device_protocol_result.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,12 +17,6 @@ typedef enum {
     DEVICE_PCM_DIRECTION_UPLINK = 1,
     DEVICE_PCM_DIRECTION_DOWNLINK = 2,
 } device_pcm_direction_t;
-
-typedef enum {
-    DEVICE_PROTOCOL_RESULT_OK = 0,
-    DEVICE_PROTOCOL_RESULT_INVALID_ARGUMENT,
-    DEVICE_PROTOCOL_RESULT_INVALID_PCM_FRAME,
-} device_protocol_result_t;
 
 typedef struct {
     device_pcm_direction_t direction;

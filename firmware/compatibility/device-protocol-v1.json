@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-28",
+  "protocol": {
+    "major": 1,
+    "minor": 0,
+    "pairing_code_digits": 6
+  },
+  "agent_robot": {
+    "baseline_commit": "bc6bff07964902e1eafd507d4cf9daeca7791250",
+    "firmware_project": "agent_robot_terminal"
+  },
+  "ez_assistant": {
+    "repository_path": "/Users/chenjiale/github/ez-assistant",
+    "base_commit": "444168730d6693e9b2911e83bbcdffd957e115f7",
+    "worktree_reproducible_from_commit": false,
+    "tracked_modified_files": 101,
+    "untracked_paths": 35,
+    "relevant_source_sha256": {
+      "apps/runtime-host/src/device/connection.rs": "44250f849b97ee0b64749de5223783bbc87fbb19c5eb3925860e95b75675c398",
+      "apps/runtime-host/src/device/crypto.rs": "0dc0b42da56781c4d0745395220f4b5bcf35506cc6c06e7765e383e40e154d68",
+      "apps/runtime-host/src/device/protocol.rs": "44230b8d16a6988a72f6677cd63b9a0d10166bc33ee59161737d5b0c61f126a6",
+      "crates/assistant-runtime/src/runtime/device.rs": "7236b0db300b641eb62ec7a1c035e8f72c0ca4d84d0950923d226590a2ff54d6",
+      "tools/device-simulator/src/node/connection.ts": "4e4269681f22909adf68ed3ebb36e9382b7d9d853fc1c76739a7c1197d4b1e90",
+      "tools/device-simulator/src/node/crypto.ts": "8e69a530d9bf64942ea7f055a3bdaabcaee59d4a7949bb546fbbcaee43d894a9",
+      "tools/device-simulator/src/node/protocol.ts": "143a2641ac8c64b1c3a32a367324ee976e57b6e61161939d3492714d2808ea80"
+    }
+  },
+  "fixtures": {
+    "crypto-v1.json": "e98a12dc8326362c2c37f6d9f5284fcef1512e961f1271f01b336b05ad816649",
+    "envelope-v1.json": "1f1c510aaf53df7f238066d273f4d1fdfae96056a508723da71d673a1efa9634",
+    "pcm-v1.json": "c2d2c6c450e84bed77bc428c5375ee2d43928713a4c2be3330b0b17452486204"
+  },
+  "toolchain": {
+    "esp_idf": "v6.0.2",
+    "target": "esp32s3",
+    "board": "ESP32-S3-DevKitC-1 v1.1 / ESP32-S3-WROOM-1-N8R8"
+  },
+  "verification": {
+    "ez_assistant_device_tests": "passed: 12",
+    "ez_assistant_runtime_device_tests": "passed: 10",
+    "node_simulator_tests": "passed: 36",
+    "desktop_relevant_tests": "passed: 15",
+    "m7_offline_revocation_reentered_pairing": true
+  }
+}

@@ -3,7 +3,7 @@
 软硬件结合项目：**Agent 本体与权威业务状态运行在 ez-assistant Runtime**，本终端只承担
 设备交互和媒体 I/O（收音 / 播放 / 显示 / 按键 / 网络连接）。
 
-阶段一硬件原型、S2.0–S2.3 与 S3.0 Demo 链路验证已完成，当前为 **S3.1 方案已完成、待实施**。
+阶段一硬件原型、S2.0–S2.3 与 S3.0 Demo 链路验证已完成，当前为 **S3.1 执行中**。
 ez-assistant v0.21.0 联调工作树中的 Device Gateway、SpeechService 与 device protocol v1.0
 暂时作为冻结基线；联调发现必要缺口时可以同步修改 ez-assistant 协议与实现，但必须保持两仓文档、
 fixtures 和组合版本一致。

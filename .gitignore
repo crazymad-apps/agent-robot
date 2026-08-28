@@ -1,3 +1,13 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+
+# ESP-IDF generated state
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+
+# Local credentials and machine-specific overrides
+firmware/.env
+firmware/sdkconfig.local

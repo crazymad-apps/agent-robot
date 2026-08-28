@@ -8,6 +8,7 @@
   },
   "agent_robot": {
     "baseline_commit": "bc6bff07964902e1eafd507d4cf9daeca7791250",
+    "firmware_baseline_commit": "1801dce63ea3f15021c26d15be34c0867e805a99",
     "firmware_project": "agent_robot_terminal"
   },
   "ez_assistant": {
@@ -20,10 +21,13 @@
       "apps/runtime-host/src/device/connection.rs": "44250f849b97ee0b64749de5223783bbc87fbb19c5eb3925860e95b75675c398",
       "apps/runtime-host/src/device/crypto.rs": "0dc0b42da56781c4d0745395220f4b5bcf35506cc6c06e7765e383e40e154d68",
       "apps/runtime-host/src/device/protocol.rs": "44230b8d16a6988a72f6677cd63b9a0d10166bc33ee59161737d5b0c61f126a6",
+      "apps/desktop/src/features/settings/SettingsDialog/DeviceSettingsPage.tsx": "051806bb67de0c2f208ca1c2a5ec2544907d3f49221d7821c24c483e8cecba77",
+      "apps/desktop/src/stores/DeviceGatewayStore.ts": "8579510ed123e590b37012e1fdfb22ea79e97057d33595f987d72f30d34f43de",
       "crates/assistant-runtime/src/runtime/device.rs": "7236b0db300b641eb62ec7a1c035e8f72c0ca4d84d0950923d226590a2ff54d6",
       "tools/device-simulator/src/node/connection.ts": "4e4269681f22909adf68ed3ebb36e9382b7d9d853fc1c76739a7c1197d4b1e90",
       "tools/device-simulator/src/node/crypto.ts": "8e69a530d9bf64942ea7f055a3bdaabcaee59d4a7949bb546fbbcaee43d894a9",
-      "tools/device-simulator/src/node/protocol.ts": "143a2641ac8c64b1c3a32a367324ee976e57b6e61161939d3492714d2808ea80"
+      "tools/device-simulator/src/node/protocol.ts": "143a2641ac8c64b1c3a32a367324ee976e57b6e61161939d3492714d2808ea80",
+      "tools/device-simulator/tests/m5-e2e.mjs": "133824c0628516b0a2799f184e07fbb1583a5c1b9e2ad6a9b90d234763f81911"
     }
   },
   "fixtures": {

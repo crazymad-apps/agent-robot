@@ -13,6 +13,9 @@ ez-assistant device protocol v1.0 and does not depend on the archived S3.0 wire 
 Run `./idf.sh check` to verify the toolchain and naming policy, then `./idf.sh build` to build the
 firmware. Local credentials and generated ESP-IDF state are ignored by Git.
 
+Run `./tools/verify_upstream_baseline.sh` before protocol work to verify both copied fixtures and the
+exact ez-assistant integration files recorded by the compatibility manifest.
+
 The production component boundaries are defined in
 [`components/README.md`](components/README.md). Components are added only when their formal API and
 tests enter the implementation; archived Demo source is not copied into this tree.

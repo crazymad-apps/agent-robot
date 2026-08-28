@@ -1,0 +1,12 @@
+{
+  "idf.currentSetup": "/Users/chenjiale/.espressif/v6.0.2/esp-idf",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  },
+  "clangd.path": "/Users/chenjiale/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/chenjiale/github/agent-robot/demo/build"
+  ]
+}

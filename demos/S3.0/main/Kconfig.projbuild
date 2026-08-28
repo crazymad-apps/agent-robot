@@ -1,0 +1,11 @@
+menu "Agent Robot S3 Demo"
+
+config VOICE_DEMO_WS_URI
+    string "Voice Demo Host WebSocket URI"
+    default ""
+    help
+        Unauthenticated development endpoint, for example
+        ws://192.168.31.10:8787/ws. This value belongs to the local sdkconfig
+        and must not contain credentials.
+
+endmenu

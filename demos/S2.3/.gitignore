@@ -1,0 +1,6 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+/captures/firmware-backups/
+/captures/*.wav

@@ -7,6 +7,9 @@ firmware/build/
 firmware/managed_components/
 firmware/sdkconfig
 firmware/sdkconfig.old
+firmware/test/target_crypto/build/
+firmware/test/target_crypto/sdkconfig
+firmware/test/target_crypto/sdkconfig.old
 
 # Local credentials and machine-specific overrides
 firmware/.env

@@ -7,7 +7,7 @@
 > [`software-architecture.md`](software-architecture.md) 为架构基线；仍标记为冻结点的事项，
 > 必须在本文档对应阶段完成验证或联合设计后确定。
 
-阶段一硬件原型、S2.0–S2.3 以及 S3.0 Demo 链路验证已完成；当前处于 S3.1 正式协议联调。
+阶段一硬件原型、S2.0–S2.3 以及 S3.0 Demo 链路验证已完成；S3.1 方案设计已完成，待进入正式协议实施。
 S3.0 已用隔离的简易 Voice Demo Host 验证设备通信、ASR、Agent SDK、TTS、连续 20 轮 PTT
 和主要故障恢复；这些证据只作为正式接入输入，Demo Host 已冻结归档，不进入产品架构。S3.1
 以 ez-assistant v0.21.0 联调工作树为暂时冻结基线：Device Gateway 与 SpeechService 作为
@@ -187,8 +187,9 @@ INMP441 → AFE/WakeNet ───┘
               终端播放 ← 语音接入层 TTS ← Runtime 回复
 ```
 
-阶段三首版仍以按键 PTT 作为端到端验收基线；阶段二通过的本地唤醒可作为等价触发入口，
-但不得让唤醒模型问题阻塞 Agent 主链路诊断。音频压缩属于后续增强。
+阶段三的 S3.1 只保留按键 PTT 作为 ASR 触发入口，不编译或运行 WakeNet；阶段二通过的本地唤醒
+证据保留给正式设备链路稳定后的独立版本，不得让唤醒模型问题进入首次 Agent 主链诊断。音频压缩
+同样属于后续增强。
 
 这里的“语音接入层”是职责名称。当前物理形态已经确定为 ez-assistant Runtime Host 内的
 Device Gateway 与 SpeechService 模块；它们与 Desktop HTTP/SSE 共用一个 Host 进程，但与
@@ -261,11 +262,14 @@ ez-assistant v0.21.0 正式发布后再用发布提交替换联调工作树描�
 
 #### S3.1 终端与语音接入层通信
 
+- 阶段入口：[`versions/S3.1/`](versions/S3.1/)
 - 基于 ez-assistant device protocol v1.0 fixtures 从零实现终端 codec，不兼容 S3.0 私有协议。
-- 接入 mDNS `_ez-assistant._tcp.local`、WSS `/device`、证书指纹、8 位码 SPAKE2 配对和
+- 接入 mDNS `_ez-assistant._tcp.local`、WSS `/device`、证书指纹、6 位码 SPAKE2 配对和
   Ed25519 设备认证；不使用预共享 token。
-- 先完成 PCM 上送、测试音频下发和状态同步，再接入真实 Agent。
-- 验证断线、连接替换、乱序/非法帧、超时、设备撤销和播放取消。
+- 先设 codec/密码学与 TLS pin/WSS 两个可行性门，再完成配对、认证、PCM 和状态控制。
+- 不增加测试专用 wire；自动化媒体测试复用正式 fixtures/M7，实机首次闭环直接接入现有正式 Host、
+  当前 Controller Session 和真实 ASR/TTS，至少连续完成 5 轮 PTT。
+- 验证断线重传、连接替换、乱序/非法帧、超时、设备撤销和播放取消。
 
 #### S3.2 ASR/TTS 接入
 
@@ -301,7 +305,7 @@ ez-assistant v0.21.0 正式发布后再用发布提交替换联调工作树描�
 - 两项目共同确认的组件职责、进程拓扑、版本依赖和兼容矩阵。
 - 语音接入层及其配置、启动和诊断说明。
 - 终端 WSS 客户端、音频缓冲、状态机和错误展示。
-- 固化的终端私有协议说明与兼容策略。
+- 固化的 device protocol 组合版本、fixtures 来源与兼容策略。
 - 可重复执行的端到端验收记录。
 
 ### 5.6 阶段门

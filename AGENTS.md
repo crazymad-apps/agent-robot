@@ -3,11 +3,23 @@
 软硬件结合项目：**Agent 本体与权威业务状态运行在 ez-assistant Runtime**，本终端只承担
 设备交互和媒体 I/O（收音 / 播放 / 显示 / 按键 / 网络连接）。
 
-阶段一硬件原型、S2.0–S2.3 与 S3.0 Demo 链路验证已完成，当前为 **S3.1 正式协议联调**。
+阶段一硬件原型、S2.0–S2.3 与 S3.0 Demo 链路验证已完成，当前为 **S3.1 方案已完成、待实施**。
 ez-assistant v0.21.0 联调工作树中的 Device Gateway、SpeechService 与 device protocol v1.0
 暂时作为冻结基线；联调发现必要缺口时可以同步修改 ez-assistant 协议与实现，但必须保持两仓文档、
 fixtures 和组合版本一致。
 `docs/roadmap.md` 是当前执行主线；硬件和软件实现必须遵循对应架构基线。
+
+## 正式实现约束
+
+- S3.1 起的 `firmware/` 是正式产品代码，不是 Demo、PoC 或过渡实现。
+- 生产目录、组件、类型、函数、变量、配置键和日志事件必须使用稳定的领域名称，不得使用
+  `demo`、`temporary`、`quick`、`hack`、`mock`、`fake`、`test_mode` 或阶段编号表达正式职责。
+- `mock`、`fake`、fixture fault 和测试专用入口只能存在于明确的测试目录或测试编译条件中，不能进入
+  release 控制流。
+- 不为 S3.0 私有协议、旧 Demo Host 或历史消息保留兼容层；需要演进时按正式 device protocol 和
+  联合版本流程处理。
+- 正式模块以职责命名，例如 `device_connection`、`pairing_session`、`device_identity`、
+  `utterance_cache` 和 `interaction_controller`；不得用阶段名或实现顺序替代领域含义。
 
 ## 文档索引
 

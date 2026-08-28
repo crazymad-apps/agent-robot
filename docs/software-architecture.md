@@ -237,8 +237,10 @@ device protocol v1.0 只服务硬件终端与 Runtime Host Device Gateway，不�
 
 v1.0 的主要语义：
 
-- `pairing_hello` / `pairing_bind` / `pairing_confirm` / `pairing_commit`。
-- `hello` 与认证结果。
+- `auth_challenge` 后按 `pairing_hello` / `pairing_pending` / `pairing_pake` /
+  `pairing_confirm` / `pairing_bind` / `pairing_bind_ack` / `pairing_commit` /
+  `pairing_complete` 完成首次配对。
+- 后续连接使用 `auth_challenge` / `hello` / `hello_ack` 完成认证。
 - `text_input` / `listen_start` / `listen_stop` / `input_accepted`。
 - `set_output_preference` / `output_preference_changed`。
 - `transcript` / `text_output` / `state_changed`。
@@ -279,7 +281,8 @@ disconnected ── connected ──▶ idle
 
 补充规则：
 
-- `listening` 由终端 PTT 或阶段二已验证的本地唤醒事实驱动，不依赖云端 VAD；阶段三端到端验收保留 PTT 回退。
+- 长期架构允许 `listening` 由终端 PTT 或本地唤醒事实驱动，不依赖云端 VAD；S3.1 只实现 PTT，
+  WakeNet 在正式设备链路稳定后的独立版本重新接入。
 - `processing` 包含 ASR、Runtime 和 TTS 首包等待，UI 可以展示细分诊断但不增加业务状态。
 - speaking 时按 PTT：先停止本地播放并发送 `playback_cancel`，再开始新的话语；播放取消不取消
   Runtime Run。
@@ -315,8 +318,10 @@ TTS: text segments → PCM stream / failure
 
 - Desktop HTTP/SSE 继续只监听 loopback；Device Gateway 单独监听 LAN WSS `/device`。
 - Runtime Host 的进程级 Token 不下发给 ESP32，设备链路也不使用预共享 token。
-- 首次配对使用 8 位一次性配对码和 SPAKE2 P-256 双向确认；配对完成后生成 Ed25519 长期设备
+- 首次配对使用 6 位启动会话级配对码和 SPAKE2 P-256 双向确认；配对完成后生成 Ed25519 长期设备
   身份，设备可以在 Runtime Store 中重命名和撤销。
+- Host 解除配对后，在线设备收到可信 `device_revoked`；离线设备下次签名认证时也必须得到同一错误。
+  终端据此清除长期密钥并自动回到未配对扫描，但仍需用户在 Desktop 确认新配对码。
 - 语音接入层只向已配对设备开放媒体服务，并限制并发、帧大小、话语时长和空闲时间。
 - 局域网设备链路使用 WSS；在发送任何设备应用消息前，终端必须对服务端原始 DER 证书执行
   SHA-256 pin 校验。关闭系统 CA 校验本身不能构成成功路径。
@@ -339,14 +344,13 @@ TTS: text segments → PCM stream / failure
 
 ### 13.2 能力协商
 
-至少协商：
+device protocol v1.0 精确协商七个布尔能力：`input_text`、`input_pcm16_16k_mono`、
+`output_text`、`output_pcm16_16k_mono`、`playback_cancel`、`display_status` 和
+`display_transcript`，以及 `text|audio|text_and_audio` 输出偏好。终端只声明真实存在的能力；
+Host 返回 effective capability 后以交集为准。
 
-- PTT、文本显示、播放取消。
-- 支持的音频格式。
-- 是否支持审批提示、唤醒词、OTA 等扩展。
-- 最大控制消息、音频帧和话语时长。
-
-未协商的能力默认关闭，不能根据版本号猜测。
+PTT、WakeNet、审批提示和 OTA 当前是本地实现或未来扩展，不伪装成 v1.0 能力位。PCM 格式、64 KiB
+控制上限、656-byte 音频帧和 60 秒 Host 上行上限也是 v1.0 固定边界，不在 hello 中重复协商。
 
 ## 14. 可观察性与验收
 

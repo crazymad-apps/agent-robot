@@ -13,6 +13,11 @@ ez-assistant device protocol v1.0 and does not depend on the archived S3.0 wire 
 Run `./idf.sh check` to verify the toolchain and naming policy, then `./idf.sh build` to build the
 firmware. Local credentials and generated ESP-IDF state are ignored by Git.
 
+Run `./test/run_host_tests.sh` for the cross-language protocol and crypto fixtures. The host test
+toolchain requires a C11 compiler, `jq`, `pkg-config`, and Mbed TLS `mbedcrypto` development files
+(Homebrew package `mbedtls` on macOS). The release firmware continues to use the mbedTLS version
+bundled with the pinned ESP-IDF toolchain.
+
 Run `./tools/verify_upstream_baseline.sh` before protocol work to verify both copied fixtures and the
 exact ez-assistant integration files recorded by the compatibility manifest.
 

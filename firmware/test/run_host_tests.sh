@@ -85,6 +85,28 @@ cc \
     "$FIRMWARE_DIR/test/host/device_transcript_test.c" \
     -o "$BUILD_DIR/device_transcript_test"
 
+if ! pkg-config --exists mbedcrypto; then
+    echo "mbedcrypto development package is required for SPAKE2 host tests." >&2
+    exit 1
+fi
+MBEDCRYPTO_CFLAGS="$(pkg-config --cflags mbedcrypto)"
+MBEDCRYPTO_LIBS="$(pkg-config --libs mbedcrypto)"
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    $MBEDCRYPTO_CFLAGS \
+    -I"$FIRMWARE_DIR/components/device_crypto/include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_spake2.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_transcript.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_capabilities.c" \
+    "$FIRMWARE_DIR/test/host/device_spake2_test.c" \
+    $MBEDCRYPTO_LIBS \
+    -o "$BUILD_DIR/device_spake2_test"
+
 arguments=(
     "$(jq -r '.header_hex' "$FIXTURE")"
     "$(jq -r '.downlink_header_hex' "$FIXTURE")"
@@ -142,3 +164,15 @@ CAPABILITY_BITS="$(jq -r '
     "$(jq -r '.authentication.device_id' "$CRYPTO_FIXTURE")" \
     "$(jq -r '.authentication.device_nonce' "$CRYPTO_FIXTURE")" \
     "$(jq -r '.authentication.output_preference' "$CRYPTO_FIXTURE")"
+
+"$BUILD_DIR/device_spake2_test" \
+    "$(jq -r '.pairing.pairing_code' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.pairing_request_id' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.installation_id' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.device_scalar_hex' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.device_share' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.host_share' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.associated_data' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.device_confirmation' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.host_confirmation' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.pairing.session_key' "$CRYPTO_FIXTURE")"

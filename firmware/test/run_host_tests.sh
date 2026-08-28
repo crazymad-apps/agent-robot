@@ -6,6 +6,22 @@ FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/pcm-v1.json"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-robot-host-tests.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
+"$FIRMWARE_DIR/tools/check_third_party_sources.sh"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$FIRMWARE_DIR/components/device_crypto/include" \
+    -I"$FIRMWARE_DIR/components/device_crypto/third_party/monocypher" \
+    "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_ed25519.c" \
+    "$FIRMWARE_DIR/components/device_crypto/third_party/monocypher/monocypher.c" \
+    "$FIRMWARE_DIR/components/device_crypto/third_party/monocypher/monocypher-ed25519.c" \
+    "$FIRMWARE_DIR/test/host/device_ed25519_test.c" \
+    -o "$BUILD_DIR/device_ed25519_test"
+
 cc \
     -std=c11 \
     -Wall \
@@ -95,6 +111,12 @@ CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
     "$(jq -r '.authentication.private_seed' "$CRYPTO_FIXTURE")" 32 \
     "$(jq -r '.authentication.public_key' "$CRYPTO_FIXTURE")" 32 \
     "$(jq -r '.authentication.signature' "$CRYPTO_FIXTURE")" 64
+
+"$BUILD_DIR/device_ed25519_test" \
+    "$(jq -r '.authentication.transcript' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.private_seed' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.public_key' "$CRYPTO_FIXTURE")" \
+    "$(jq -r '.authentication.signature' "$CRYPTO_FIXTURE")"
 
 ENVELOPE_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/envelope-v1.json"
 "$BUILD_DIR/device_control_envelope_test" "$(jq -c '.valid_envelope' "$ENVELOPE_FIXTURE")"

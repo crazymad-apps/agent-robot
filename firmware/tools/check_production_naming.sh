@@ -16,7 +16,9 @@ for production_path in "${PRODUCTION_PATHS[@]}"; do
     [[ -e "$production_path" ]] && existing_paths+=("$production_path")
 done
 
-if rg --hidden --ignore-case --line-number "$PROHIBITED_PATTERN" "${existing_paths[@]}"; then
+if rg --hidden --ignore-case --line-number \
+    --glob '!**/device_crypto/third_party/monocypher/**' \
+    "$PROHIBITED_PATTERN" "${existing_paths[@]}"; then
     echo "Production naming policy violation detected." >&2
     exit 1
 fi

@@ -47,11 +47,13 @@ require_port() {
 case "${1:-help}" in
     check)
         "$FIRMWARE_DIR/tools/check_production_naming.sh"
+        "$FIRMWARE_DIR/tools/check_third_party_sources.sh"
         run_idf "idf.py --version"
         run_idf "ninja --version"
         ;;
     build)
         "$FIRMWARE_DIR/tools/check_production_naming.sh"
+        "$FIRMWARE_DIR/tools/check_third_party_sources.sh"
         ensure_target
         run_idf "idf.py build"
         ;;

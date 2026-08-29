@@ -91,6 +91,11 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   Host 又在保持 installation identity 和证书 pin 不变的情况下关闭旧端口、改用新端口重新广播；正式
   `device_connection` 依次完成旧连接关闭、缓存旧 endpoint 失败、重新发现和新 connection epoch 建立。
   物理 AP 关闭/恢复及已认证会话重建仍未执行，因此 P2 仍为部分通过。
+- P3 已开始实现正式 `device_identity`：单个有 schema/version/length/state 的 NVS blob 表达
+  `pending|active` credential 或仅保留 Host binding 的 revoked 状态，加载时校验字符串边界、Host
+  identity、保留位和 Ed25519 seed→public key 一致性。正式主程序已接入 fail-closed 启动策略：记录
+  不存在时进入未配对扫描，记录损坏时禁用 Device Connection 而不自动换绑。codec/边界 host test 和
+  clean-image 实机空身份加载已通过；实际 NVS pending→active、掉电恢复及 pairing/auth 全序列仍待执行。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
   “由上游 commit 复现”门仍待上游正式提交后通过。

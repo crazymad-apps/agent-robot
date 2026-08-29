@@ -13,6 +13,7 @@
 
 #define P256_SCALAR_BYTES 32U
 #define SHA256_BYTES 32U
+#define SHA256_BLOCK_BYTES 64U
 #define SHA512_BYTES 64U
 #define SESSION_KEY_BYTES 16U
 #define CONFIRMATION_KEY_BYTES 16U
@@ -69,6 +70,9 @@ static device_crypto_result_t map_mbedtls_result(int result)
         return DEVICE_CRYPTO_RESULT_OK;
     }
     if (result == MBEDTLS_ERR_MPI_ALLOC_FAILED) {
+        return DEVICE_CRYPTO_RESULT_RESOURCE_EXHAUSTED;
+    }
+    if (result == MBEDTLS_ERR_MD_ALLOC_FAILED) {
         return DEVICE_CRYPTO_RESULT_RESOURCE_EXHAUSTED;
     }
     if (result == MBEDTLS_RANDOM_FAILURE) {
@@ -341,28 +345,74 @@ static device_crypto_result_t hmac_sha256_parts(
     size_t third_size,
     uint8_t output[SHA256_BYTES])
 {
+    if ((key_size > 0U && key == NULL) || (first_size > 0U && first == NULL)
+        || (second_size > 0U && second == NULL) || (third_size > 0U && third == NULL)
+        || output == NULL) {
+        return DEVICE_CRYPTO_RESULT_INVALID_ARGUMENT;
+    }
+
     const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    uint8_t normalized_key[SHA256_BYTES] = {0};
+    const uint8_t *hmac_key = key;
+    size_t hmac_key_size = key_size;
+    device_crypto_result_t result = DEVICE_CRYPTO_RESULT_OK;
+    if (key_size > SHA256_BLOCK_BYTES) {
+        result = hash_message(MBEDTLS_MD_SHA256, key, key_size, normalized_key);
+        hmac_key = normalized_key;
+        hmac_key_size = sizeof(normalized_key);
+    }
+
+    uint8_t inner_pad[SHA256_BLOCK_BYTES];
+    uint8_t outer_pad[SHA256_BLOCK_BYTES];
+    uint8_t inner_digest[SHA256_BYTES] = {0};
+    memset(inner_pad, 0x36, sizeof(inner_pad));
+    memset(outer_pad, 0x5c, sizeof(outer_pad));
+    for (size_t index = 0U; index < hmac_key_size; ++index) {
+        inner_pad[index] ^= hmac_key[index];
+        outer_pad[index] ^= hmac_key[index];
+    }
+
     mbedtls_md_context_t context;
     mbedtls_md_init(&context);
-    int operation = sha256 == NULL ? MBEDTLS_ERR_MD_FEATURE_UNAVAILABLE
-                                   : mbedtls_md_setup(&context, sha256, 1);
+    int operation = result == DEVICE_CRYPTO_RESULT_OK && sha256 != NULL
+        ? mbedtls_md_setup(&context, sha256, 0)
+        : MBEDTLS_ERR_MD_FEATURE_UNAVAILABLE;
     if (operation == 0) {
-        operation = mbedtls_md_hmac_starts(&context, key, key_size);
+        operation = mbedtls_md_starts(&context);
+    }
+    if (operation == 0) {
+        operation = mbedtls_md_update(&context, inner_pad, sizeof(inner_pad));
     }
     if (operation == 0 && first_size > 0U) {
-        operation = mbedtls_md_hmac_update(&context, first, first_size);
+        operation = mbedtls_md_update(&context, first, first_size);
     }
     if (operation == 0 && second_size > 0U) {
-        operation = mbedtls_md_hmac_update(&context, second, second_size);
+        operation = mbedtls_md_update(&context, second, second_size);
     }
     if (operation == 0 && third_size > 0U) {
-        operation = mbedtls_md_hmac_update(&context, third, third_size);
+        operation = mbedtls_md_update(&context, third, third_size);
     }
     if (operation == 0) {
-        operation = mbedtls_md_hmac_finish(&context, output);
+        operation = mbedtls_md_finish(&context, inner_digest);
+    }
+    if (operation == 0) {
+        operation = mbedtls_md_starts(&context);
+    }
+    if (operation == 0) {
+        operation = mbedtls_md_update(&context, outer_pad, sizeof(outer_pad));
+    }
+    if (operation == 0) {
+        operation = mbedtls_md_update(&context, inner_digest, sizeof(inner_digest));
+    }
+    if (operation == 0) {
+        operation = mbedtls_md_finish(&context, output);
     }
     mbedtls_md_free(&context);
-    return map_mbedtls_result(operation);
+    mbedtls_platform_zeroize(inner_digest, sizeof(inner_digest));
+    mbedtls_platform_zeroize(outer_pad, sizeof(outer_pad));
+    mbedtls_platform_zeroize(inner_pad, sizeof(inner_pad));
+    mbedtls_platform_zeroize(normalized_key, sizeof(normalized_key));
+    return result == DEVICE_CRYPTO_RESULT_OK ? map_mbedtls_result(operation) : result;
 }
 
 static device_crypto_result_t derive_keys(

@@ -15,6 +15,8 @@
 #include "device_spake2.h"
 #include "device_transcript.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mbedtls/md.h"
 
 typedef struct {
@@ -29,6 +31,7 @@ static void require_validation(bool condition, const char *step)
 {
     if (!condition) {
         ESP_LOGE(TAG, "validation failed: %s", step);
+        vTaskSuspend(NULL);
         abort();
     }
 }

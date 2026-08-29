@@ -9,6 +9,7 @@
 | [`wss_transport`](wss_transport/) | TLS certificate pinning and the required RFC 6455 subset |
 | [`device_protocol`](device_protocol/) | Strict control envelopes and PCM frame codec |
 | [`device_connection`](device_connection/) | Pairing, authentication, heartbeat and connection recovery |
+| [`network_connectivity`](network_connectivity/) | Wi-Fi credentials, IP epochs and bounded reconnect policy |
 | `audio_io` | I2S capture, playback and PCM conversion |
 | `interaction` | PTT lifecycle and the single authoritative interaction state |
 | `ui` | Minimal LVGL status projection |
@@ -16,3 +17,6 @@
 
 Release components cannot depend on test-only code. New component directories are created together
 with a stable public contract and verification, not as empty placeholders.
+
+Target verification applications are kept under `firmware/test/target_*`; the Wi-Fi lifecycle
+application is run with `test/run_target_network_connectivity_validation.sh`.

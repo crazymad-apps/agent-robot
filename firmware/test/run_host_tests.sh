@@ -68,6 +68,16 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -I"$FIRMWARE_DIR/components/network_connectivity/private_include" \
+    "$FIRMWARE_DIR/components/network_connectivity/network_reconnect_policy.c" \
+    "$FIRMWARE_DIR/test/host/network_reconnect_policy_test.c" \
+    -o "$BUILD_DIR/network_reconnect_policy_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
     "$FIRMWARE_DIR/test/host/device_base64url_test.c" \
@@ -156,6 +166,7 @@ done < <(jq -r '.invalid_header_hex[]' "$FIXTURE")
 "$BUILD_DIR/device_message_replay_window_test"
 "$BUILD_DIR/host_discovery_selection_test"
 "$BUILD_DIR/device_connection_supervisor_test"
+"$BUILD_DIR/network_reconnect_policy_test"
 
 CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
 "$BUILD_DIR/device_base64url_test" \

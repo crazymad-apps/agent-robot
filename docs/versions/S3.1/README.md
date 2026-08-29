@@ -87,8 +87,10 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   epoch 和 1/2/4/8/16/30 秒有界退避。正式主程序直接把 IP 状态交给 `device_connection`，并用有界
   队列异步记录生命周期事件；target transport 也已移除自建 Wi-Fi 实现并复用同一正式服务。
   ESP32-S3 已分别完成主动 STA 断线恢复、未配对且 pairing window 关闭时不误选 Host、2/4/8 秒发现
-  退避，以及 mDNS、错误证书阻断、正确证书连接真实 Host `/device` 的 clean-image 验证。物理 AP
-  关闭/恢复、Host 重启及端口变化的完整串联矩阵尚未执行，因此 P2 仍为部分通过。
+  退避，以及 mDNS、错误证书阻断、正确证书连接真实 Host `/device` 的 clean-image 验证。隔离恢复
+  Host 又在保持 installation identity 和证书 pin 不变的情况下关闭旧端口、改用新端口重新广播；正式
+  `device_connection` 依次完成旧连接关闭、缓存旧 endpoint 失败、重新发现和新 connection epoch 建立。
+  物理 AP 关闭/恢复及已认证会话重建仍未执行，因此 P2 仍为部分通过。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
   “由上游 commit 复现”门仍待上游正式提交后通过。

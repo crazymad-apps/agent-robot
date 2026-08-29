@@ -63,7 +63,8 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
 - [`方案设计.md`](方案设计.md)：架构、协议、安全、状态机、资源与关键选型。
 - [`断线重连设计.md`](断线重连设计.md)：分层恢复、退避、epoch、输入幂等、错误分类与故障矩阵。
 - [`阶段计划.md`](阶段计划.md)：实施顺序、阶段门、停止条件和跨仓变更流程。
-- [`验收记录.md`](验收记录.md)：当前为待执行模板，只在取得实测证据后填写通过结论。
+- [`验收记录.md`](验收记录.md)：持续记录已取得的构建、主机测试与 ESP32-S3 实测证据；未执行项
+  保持明确标注，不据实现结果推定通过。
 
 ## 当前实施进度
 
@@ -75,15 +76,18 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   confirmation/binding、签名篡改与边界测试均已通过主机测试，对应组件已通过 ESP32-S3 release 编译。
 - P1 独立 ESP32-S3 target validation 工程已直接链接正式协议/密码学组件；三份冻结 fixtures、
   transcript、Ed25519、SPAKE2 和硬件随机源已于 2026-08-29 在 ESP32-S3 rev 0.2 实机通过。
-- P2 已实现正式 `host_discovery`、`wss_transport` 和 connection Supervisor：唯一 Host 选择、TLS peer
-  DER pin、严格 Upgrade、RFC 6455 必需子集、connection epoch、单 intent、heartbeat 与抖动退避均有
-  host 边界测试。独立 target transport image 已在同一开发板上验证错误 pin 阻断以及正确 pin 连接真实
+- P2 已实现正式 `host_discovery`、`wss_transport`、connection Supervisor 和 `device_connection` 运行时
+  服务：唯一 Host 选择、TLS peer DER pin、严格 Upgrade、RFC 6455 必需子集、connection/IP epoch、
+  单 intent、heartbeat、抖动退避、WSS 可取消 I/O、协议 replay window 与安全阻断均有 host 边界测试。
+  mDNS 查询改用带 250 ms 收尾窗口的异步硬超时，遗留查询不能永久阻塞连接任务，下一轮会重建发现
+  服务。独立 target transport image 已在同一开发板上验证错误 pin 阻断以及正确 pin 连接真实
   ez-assistant `/device` 并收到 `auth_challenge`；target fault image 又完成 pin 前零应用字节、坏 Upgrade、
   64 KiB 分片中穿插 Ping、binary/Close、超长帧、半包超时和错误 masking。
 - P2 已新增正式 `network_connectivity` 服务，独占 NVS Wi-Fi 凭据、Station 生命周期、boot-local IP
-  epoch 和 1/2/4/8/16/30 秒有界退避。正式主程序已通过有界队列把网络事件交给终端生命周期任务；
-  target transport 也已移除自建 Wi-Fi 实现并复用同一正式服务。ESP32-S3 已分别完成主动 STA 断线
-  恢复，以及 mDNS、错误证书阻断、正确证书连接真实 Host `/device` 的 clean-image 验证。物理 AP
+  epoch 和 1/2/4/8/16/30 秒有界退避。正式主程序直接把 IP 状态交给 `device_connection`，并用有界
+  队列异步记录生命周期事件；target transport 也已移除自建 Wi-Fi 实现并复用同一正式服务。
+  ESP32-S3 已分别完成主动 STA 断线恢复、未配对且 pairing window 关闭时不误选 Host、2/4/8 秒发现
+  退避，以及 mDNS、错误证书阻断、正确证书连接真实 Host `/device` 的 clean-image 验证。物理 AP
   关闭/恢复、Host 重启及端口变化的完整串联矩阵尚未执行，因此 P2 仍为部分通过。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的

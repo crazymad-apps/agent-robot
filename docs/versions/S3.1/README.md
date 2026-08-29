@@ -75,6 +75,11 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   confirmation/binding、签名篡改与边界测试均已通过主机测试，对应组件已通过 ESP32-S3 release 编译。
 - P1 独立 ESP32-S3 target validation 工程已直接链接正式协议/密码学组件；三份冻结 fixtures、
   transcript、Ed25519、SPAKE2 和硬件随机源已于 2026-08-29 在 ESP32-S3 rev 0.2 实机通过。
+- P2 已实现正式 `host_discovery`、`wss_transport` 和 connection Supervisor：唯一 Host 选择、TLS peer
+  DER pin、严格 Upgrade、RFC 6455 必需子集、connection epoch、单 intent、heartbeat 与抖动退避均有
+  host 边界测试。独立 target transport image 已在同一开发板上验证错误 pin 阻断以及正确 pin 连接真实
+  ez-assistant `/device` 并收到 `auth_challenge`；完整 fault-injection/重连矩阵尚未执行，因此 P2 仍为
+  部分通过。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
   “由上游 commit 复现”门仍待上游正式提交后通过。

@@ -47,6 +47,27 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -I"$FIRMWARE_DIR/components/host_discovery/include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    "$FIRMWARE_DIR/components/host_discovery/host_selection.c" \
+    "$FIRMWARE_DIR/test/host/host_discovery_selection_test.c" \
+    -o "$BUILD_DIR/host_discovery_selection_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$FIRMWARE_DIR/components/device_connection/include" \
+    "$FIRMWARE_DIR/components/device_connection/device_connection_supervisor.c" \
+    "$FIRMWARE_DIR/test/host/device_connection_supervisor_test.c" \
+    -o "$BUILD_DIR/device_connection_supervisor_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
     "$FIRMWARE_DIR/test/host/device_base64url_test.c" \
@@ -97,6 +118,19 @@ cc \
     -Wextra \
     -Werror \
     $MBEDCRYPTO_CFLAGS \
+    -I"$FIRMWARE_DIR/components/wss_transport/private_include" \
+    "$FIRMWARE_DIR/components/wss_transport/wss_frame_codec.c" \
+    "$FIRMWARE_DIR/components/wss_transport/wss_upgrade.c" \
+    "$FIRMWARE_DIR/test/host/wss_transport_codec_test.c" \
+    $MBEDCRYPTO_LIBS \
+    -o "$BUILD_DIR/wss_transport_codec_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    $MBEDCRYPTO_CFLAGS \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     -I"$FIRMWARE_DIR/components/device_protocol/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
@@ -120,6 +154,8 @@ done < <(jq -r '.invalid_header_hex[]' "$FIXTURE")
 
 "$BUILD_DIR/device_pcm_frame_test" "${arguments[@]}"
 "$BUILD_DIR/device_message_replay_window_test"
+"$BUILD_DIR/host_discovery_selection_test"
+"$BUILD_DIR/device_connection_supervisor_test"
 
 CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
 "$BUILD_DIR/device_base64url_test" \
@@ -176,3 +212,5 @@ CAPABILITY_BITS="$(jq -r '
     "$(jq -r '.pairing.device_confirmation' "$CRYPTO_FIXTURE")" \
     "$(jq -r '.pairing.host_confirmation' "$CRYPTO_FIXTURE")" \
     "$(jq -r '.pairing.session_key' "$CRYPTO_FIXTURE")"
+
+"$BUILD_DIR/wss_transport_codec_test"

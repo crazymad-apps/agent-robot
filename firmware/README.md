@@ -21,6 +21,11 @@ bundled with the pinned ESP-IDF toolchain.
 Run `./tools/verify_upstream_baseline.sh` before protocol work to verify both copied fixtures and the
 exact ez-assistant integration files recorded by the compatibility manifest.
 
+Run `./test/run_target_transport_validation.sh build` to build the target-only discovery/TLS/WSS
+validation image. With the ez-assistant Device Gateway running and the board's `wifi_cfg` NVS
+credentials provisioned, use `./test/run_target_transport_validation.sh flash-monitor <serial-port>`
+to exercise the production transport components on the ESP32-S3.
+
 The production component boundaries are defined in
 [`components/README.md`](components/README.md). Components are added only when their formal API and
 tests enter the implementation; archived Demo source is not copied into this tree.

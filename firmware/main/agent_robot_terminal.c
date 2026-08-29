@@ -1,5 +1,7 @@
 #include <stdbool.h>
+#include <string.h>
 
+#include "device_identity.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -32,6 +34,7 @@ typedef struct {
 static QueueHandle_t terminal_event_queue;
 static network_connectivity_t *terminal_network_connectivity;
 static device_connection_t *terminal_device_connection;
+static device_identity_t *terminal_device_identity;
 static uint32_t terminal_event_drop_count;
 static uint32_t terminal_device_network_update_error_count;
 
@@ -157,6 +160,9 @@ static void terminal_device_connection_network_changed(
     bool has_ip,
     uint64_t ip_epoch)
 {
+    if (terminal_device_connection == NULL) {
+        return;
+    }
     const device_connection_result_t result = device_connection_network_changed(
         terminal_device_connection,
         has_ip,
@@ -167,6 +173,59 @@ static void terminal_device_connection_network_changed(
             1U,
             __ATOMIC_RELAXED);
     }
+}
+
+static void terminal_secure_zero(void *memory, size_t memory_size)
+{
+    volatile uint8_t *bytes = memory;
+    while (memory_size > 0U) {
+        *bytes++ = 0U;
+        --memory_size;
+    }
+}
+
+static bool terminal_identity_load(
+    device_connection_identity_t *connection_identity)
+{
+    device_identity_record_t identity_record = {0};
+    const device_identity_result_t result = device_identity_load(
+        terminal_device_identity,
+        &identity_record);
+    if (result == DEVICE_IDENTITY_RESULT_NOT_FOUND) {
+        ESP_LOGI(TAG, "event=device_identity_loaded state=none host_binding_retained=false");
+        return true;
+    }
+    if (result != DEVICE_IDENTITY_RESULT_OK) {
+        ESP_LOGE(
+            TAG,
+            "event=device_identity_load_failed result=%u connection_service=disabled",
+            (unsigned int)result);
+        terminal_secure_zero(&identity_record, sizeof(identity_record));
+        return false;
+    }
+    if (identity_record.state == DEVICE_IDENTITY_STATE_NONE) {
+        ESP_LOGI(
+            TAG,
+            "event=device_identity_loaded state=none host_binding_retained=%s",
+            identity_record.host_installation_id[0] == '\0' ? "false" : "true");
+        terminal_secure_zero(&identity_record, sizeof(identity_record));
+        return true;
+    }
+    connection_identity->paired = true;
+    memcpy(
+        connection_identity->installation_id,
+        identity_record.host_installation_id,
+        sizeof(connection_identity->installation_id));
+    memcpy(
+        connection_identity->certificate_fingerprint,
+        identity_record.host_certificate_fingerprint,
+        sizeof(connection_identity->certificate_fingerprint));
+    ESP_LOGI(
+        TAG,
+        "event=device_identity_loaded state=%s",
+        identity_record.state == DEVICE_IDENTITY_STATE_ACTIVE ? "active" : "pending");
+    terminal_secure_zero(&identity_record, sizeof(identity_record));
+    return true;
 }
 
 static void terminal_lifecycle_task(void *context)
@@ -254,21 +313,29 @@ void app_main(void)
             ? ESP_OK
             : ESP_ERR_NO_MEM);
 
-    const device_connection_config_t device_connection_config = {
-        .identity = {.paired = false},
-        .event_callback = terminal_device_connection_event,
-        .event_context = terminal_event_queue,
-    };
     ESP_ERROR_CHECK(
-        device_connection_create(
-            &device_connection_config,
-            &terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
+        device_identity_open(&terminal_device_identity) == DEVICE_IDENTITY_RESULT_OK
             ? ESP_OK
             : ESP_FAIL);
-    ESP_ERROR_CHECK(
-        device_connection_start(terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
-            ? ESP_OK
-            : ESP_FAIL);
+    device_connection_identity_t connection_identity = {0};
+    const bool identity_available = terminal_identity_load(&connection_identity);
+    if (identity_available) {
+        const device_connection_config_t device_connection_config = {
+            .identity = connection_identity,
+            .event_callback = terminal_device_connection_event,
+            .event_context = terminal_event_queue,
+        };
+        ESP_ERROR_CHECK(
+            device_connection_create(
+                &device_connection_config,
+                &terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
+                ? ESP_OK
+                : ESP_FAIL);
+        ESP_ERROR_CHECK(
+            device_connection_start(terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
+                ? ESP_OK
+                : ESP_FAIL);
+    }
 
     const network_connectivity_config_t network_config = {
         .event_callback = terminal_network_event,
@@ -286,5 +353,8 @@ void app_main(void)
                 == NETWORK_CONNECTIVITY_RESULT_OK
             ? ESP_OK
             : ESP_FAIL);
-    ESP_LOGI(TAG, "event=terminal_boot status=connection_services_started");
+    ESP_LOGI(
+        TAG,
+        "event=terminal_boot status=%s",
+        identity_available ? "connection_services_started" : "identity_recovery_required");
 }

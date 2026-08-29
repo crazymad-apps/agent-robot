@@ -187,6 +187,26 @@ CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
     "$(jq -r '.authentication.public_key' "$CRYPTO_FIXTURE")" \
     "$(jq -r '.authentication.signature' "$CRYPTO_FIXTURE")"
 
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$FIRMWARE_DIR/components/device_identity/include" \
+    -I"$FIRMWARE_DIR/components/device_identity/private_include" \
+    -I"$FIRMWARE_DIR/components/device_crypto/include" \
+    -I"$FIRMWARE_DIR/components/device_crypto/third_party/monocypher" \
+    -I"$FIRMWARE_DIR/components/host_discovery/include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    "$FIRMWARE_DIR/components/device_identity/device_identity_record.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_ed25519.c" \
+    "$FIRMWARE_DIR/components/device_crypto/third_party/monocypher/monocypher.c" \
+    "$FIRMWARE_DIR/components/device_crypto/third_party/monocypher/monocypher-ed25519.c" \
+    "$FIRMWARE_DIR/test/host/device_identity_record_test.c" \
+    -o "$BUILD_DIR/device_identity_record_test"
+
+"$BUILD_DIR/device_identity_record_test"
+
 ENVELOPE_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/envelope-v1.json"
 "$BUILD_DIR/device_control_envelope_test" "$(jq -c '.valid_envelope' "$ENVELOPE_FIXTURE")"
 

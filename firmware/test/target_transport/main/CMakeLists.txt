@@ -6,8 +6,8 @@ idf_component_register(
         device_protocol
         esp_event
         esp_netif
-        esp_wifi
         host_discovery
+        network_connectivity
         nvs_flash
         wss_transport
 )

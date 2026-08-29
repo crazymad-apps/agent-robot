@@ -10,22 +10,18 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "host_discovery.h"
-#include "nvs.h"
+#include "network_connectivity.h"
 #include "nvs_flash.h"
 #include "wss_transport.h"
 
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_NVS_NAMESPACE "wifi_cfg"
-#define WIFI_NVS_SSID_KEY "ssid"
-#define WIFI_NVS_PASSWORD_KEY "password"
+#define NETWORK_READY_BIT BIT0
 
 static const char *const TAG = "transport_validation";
-static EventGroupHandle_t wifi_events;
+static EventGroupHandle_t network_events;
 
 static void validation_fail(const char *step, int result)
 {
@@ -35,103 +31,48 @@ static void validation_fail(const char *step, int result)
     }
 }
 
-static esp_err_t load_wifi_credentials(
-    char *ssid,
-    size_t ssid_capacity,
-    char *password,
-    size_t password_capacity)
+static void network_event(
+    const network_connectivity_event_t *event,
+    void *context)
 {
-    nvs_handle_t handle;
-    esp_err_t result = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (result != ESP_OK) {
-        return result;
+    EventGroupHandle_t events = context;
+    if (event->type == NETWORK_CONNECTIVITY_EVENT_IP_ACQUIRED) {
+        xEventGroupSetBits(events, NETWORK_READY_BIT);
+    } else if (event->type == NETWORK_CONNECTIVITY_EVENT_IP_LOST) {
+        xEventGroupClearBits(events, NETWORK_READY_BIT);
     }
-    size_t ssid_length = ssid_capacity;
-    result = nvs_get_str(handle, WIFI_NVS_SSID_KEY, ssid, &ssid_length);
-    if (result == ESP_OK) {
-        size_t password_length = password_capacity;
-        result = nvs_get_str(handle, WIFI_NVS_PASSWORD_KEY, password, &password_length);
+}
+
+static network_connectivity_result_t network_initialize(
+    network_connectivity_t **connectivity)
+{
+    network_events = xEventGroupCreate();
+    if (network_events == NULL) {
+        return NETWORK_CONNECTIVITY_RESULT_NO_MEMORY;
     }
-    nvs_close(handle);
+    if (esp_netif_init() != ESP_OK || esp_event_loop_create_default() != ESP_OK) {
+        vEventGroupDelete(network_events);
+        network_events = NULL;
+        return NETWORK_CONNECTIVITY_RESULT_PLATFORM_ERROR;
+    }
+    const network_connectivity_config_t config = {
+        .event_callback = network_event,
+        .event_context = network_events,
+    };
+    network_connectivity_result_t result =
+        network_connectivity_create(&config, connectivity);
+    if (result == NETWORK_CONNECTIVITY_RESULT_OK) {
+        result = network_connectivity_start(*connectivity);
+    }
+    if (result != NETWORK_CONNECTIVITY_RESULT_OK && *connectivity != NULL) {
+        network_connectivity_destroy(*connectivity);
+        *connectivity = NULL;
+    }
+    if (result != NETWORK_CONNECTIVITY_RESULT_OK) {
+        vEventGroupDelete(network_events);
+        network_events = NULL;
+    }
     return result;
-}
-
-static void wifi_event(
-    void *argument,
-    esp_event_base_t event_base,
-    int32_t event_id,
-    void *event_data)
-{
-    (void)argument;
-    (void)event_base;
-    (void)event_data;
-    if (event_id == WIFI_EVENT_STA_START || event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(wifi_events, WIFI_CONNECTED_BIT);
-        (void)esp_wifi_connect();
-    }
-}
-
-static void ip_event(
-    void *argument,
-    esp_event_base_t event_base,
-    int32_t event_id,
-    void *event_data)
-{
-    (void)argument;
-    (void)event_base;
-    (void)event_data;
-    if (event_id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
-    }
-}
-
-static esp_err_t wifi_initialize(void)
-{
-    char ssid[33U] = {0};
-    char password[64U] = {0};
-    esp_err_t result = load_wifi_credentials(ssid, sizeof(ssid), password, sizeof(password));
-    if (result != ESP_OK) {
-        return result;
-    }
-    wifi_events = xEventGroupCreate();
-    if (wifi_events == NULL) {
-        memset(password, 0, sizeof(password));
-        return ESP_ERR_NO_MEM;
-    }
-    if ((result = esp_netif_init()) != ESP_OK ||
-        (result = esp_event_loop_create_default()) != ESP_OK ||
-        esp_netif_create_default_wifi_sta() == NULL) {
-        memset(password, 0, sizeof(password));
-        return result == ESP_OK ? ESP_ERR_NO_MEM : result;
-    }
-    const wifi_init_config_t initialization = WIFI_INIT_CONFIG_DEFAULT();
-    if ((result = esp_wifi_init(&initialization)) != ESP_OK ||
-        (result = esp_wifi_set_storage(WIFI_STORAGE_RAM)) != ESP_OK ||
-        (result = esp_wifi_set_mode(WIFI_MODE_STA)) != ESP_OK ||
-        (result = esp_event_handler_register(
-             WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL)) != ESP_OK ||
-        (result = esp_event_handler_register(
-             IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event, NULL)) != ESP_OK) {
-        memset(password, 0, sizeof(password));
-        return result;
-    }
-
-    wifi_config_t configuration = {0};
-    const size_t ssid_length = strlen(ssid);
-    const size_t password_length = strlen(password);
-    memcpy(configuration.sta.ssid, ssid, ssid_length);
-    memcpy(configuration.sta.password, password, password_length);
-    configuration.sta.threshold.authmode =
-        password_length == 0U ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
-    configuration.sta.pmf_cfg.capable = true;
-    configuration.sta.pmf_cfg.required = false;
-    result = esp_wifi_set_config(WIFI_IF_STA, &configuration);
-    memset(password, 0, sizeof(password));
-    if (result != ESP_OK) {
-        return result;
-    }
-    esp_log_level_set("wifi", ESP_LOG_WARN);
-    return esp_wifi_start();
 }
 
 static bool copy_endpoint(
@@ -157,14 +98,16 @@ void app_main(void)
     if (nvs_result != ESP_OK) {
         validation_fail("nvs_initialize", nvs_result);
     }
-    const esp_err_t wifi_result = wifi_initialize();
-    if (wifi_result != ESP_OK) {
-        validation_fail("wifi_initialize", wifi_result);
+    network_connectivity_t *connectivity = NULL;
+    const network_connectivity_result_t network_result =
+        network_initialize(&connectivity);
+    if (network_result != NETWORK_CONNECTIVITY_RESULT_OK) {
+        validation_fail("network_initialize", network_result);
     }
     const EventBits_t connected = xEventGroupWaitBits(
-        wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(30000U));
-    if ((connected & WIFI_CONNECTED_BIT) == 0U) {
-        validation_fail("wifi_connect", ESP_ERR_TIMEOUT);
+        network_events, NETWORK_READY_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(30000U));
+    if ((connected & NETWORK_READY_BIT) == 0U) {
+        validation_fail("network_ready", ESP_ERR_TIMEOUT);
     }
 
     host_discovery_result_t discovery_result = host_discovery_initialize();
@@ -247,5 +190,8 @@ void app_main(void)
     (void)wss_transport_send_close(transport, 1000U, 1000U);
     wss_transport_destroy(transport);
     free(payload);
+    host_discovery_deinitialize();
+    network_connectivity_destroy(connectivity);
+    vEventGroupDelete(network_events);
     ESP_LOGI(TAG, "target discovery, TLS pin, and WSS validation passed");
 }

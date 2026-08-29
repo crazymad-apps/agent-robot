@@ -20,6 +20,7 @@
 
 #define WSS_TRANSPORT_UPGRADE_REQUEST_MAX_BYTES 512U
 #define WSS_TRANSPORT_PCM_MESSAGE_BYTES 656U
+#define WSS_TRANSPORT_CANCEL_POLL_INTERVAL_MS 100U
 
 struct wss_transport {
     int socket_fd;
@@ -34,6 +35,8 @@ struct wss_transport {
     uint8_t *fragment_payload;
     size_t fragment_length;
     uint64_t last_receive_time_ms;
+    wss_transport_cancel_callback_t cancel_callback;
+    void *cancel_context;
 };
 
 static uint64_t monotonic_ms(void)
@@ -58,20 +61,40 @@ static bool deadline_remaining(uint64_t deadline, struct timeval *timeout)
     return true;
 }
 
-static wss_transport_result_t wait_for_socket(int socket_fd, bool write, uint64_t deadline)
+static bool operation_cancelled(const wss_transport_t *transport)
+{
+    return transport->cancel_callback != NULL &&
+           transport->cancel_callback(transport->cancel_context);
+}
+
+static wss_transport_result_t wait_for_socket(
+    wss_transport_t *transport,
+    bool write,
+    uint64_t deadline)
 {
     while (true) {
+        if (operation_cancelled(transport)) {
+            return WSS_TRANSPORT_RESULT_CANCELLED;
+        }
         struct timeval timeout;
         if (!deadline_remaining(deadline, &timeout)) {
             return WSS_TRANSPORT_RESULT_TIMEOUT;
+        }
+        const uint64_t remaining_us =
+            (uint64_t)timeout.tv_sec * 1000000U + (uint64_t)timeout.tv_usec;
+        const uint64_t poll_interval_us =
+            (uint64_t)WSS_TRANSPORT_CANCEL_POLL_INTERVAL_MS * 1000U;
+        if (remaining_us > poll_interval_us) {
+            timeout.tv_sec = 0;
+            timeout.tv_usec = (suseconds_t)poll_interval_us;
         }
         fd_set read_set;
         fd_set write_set;
         FD_ZERO(&read_set);
         FD_ZERO(&write_set);
-        FD_SET(socket_fd, write ? &write_set : &read_set);
+        FD_SET(transport->socket_fd, write ? &write_set : &read_set);
         const int result = select(
-            socket_fd + 1,
+            transport->socket_fd + 1,
             write ? NULL : &read_set,
             write ? &write_set : NULL,
             NULL,
@@ -80,7 +103,7 @@ static wss_transport_result_t wait_for_socket(int socket_fd, bool write, uint64_
             return WSS_TRANSPORT_RESULT_OK;
         }
         if (result == 0) {
-            return WSS_TRANSPORT_RESULT_TIMEOUT;
+            continue;
         }
         if (errno != EINTR) {
             return WSS_TRANSPORT_RESULT_NETWORK_UNAVAILABLE;
@@ -167,7 +190,7 @@ static wss_transport_result_t connect_socket(
         return WSS_TRANSPORT_RESULT_NETWORK_UNAVAILABLE;
     }
     const wss_transport_result_t wait_result =
-        wait_for_socket(transport->socket_fd, true, deadline);
+        wait_for_socket(transport, true, deadline);
     if (wait_result != WSS_TRANSPORT_RESULT_OK) {
         return wait_result;
     }
@@ -209,6 +232,9 @@ static wss_transport_result_t tls_handshake(wss_transport_t *transport, uint64_t
         NULL);
 
     while (true) {
+        if (operation_cancelled(transport)) {
+            return WSS_TRANSPORT_RESULT_CANCELLED;
+        }
         const int result = mbedtls_ssl_handshake(&transport->tls);
         if (result == 0) {
             return WSS_TRANSPORT_RESULT_OK;
@@ -217,7 +243,7 @@ static wss_transport_result_t tls_handshake(wss_transport_t *transport, uint64_t
             return WSS_TRANSPORT_RESULT_TLS_FAILED;
         }
         const wss_transport_result_t wait_result = wait_for_socket(
-            transport->socket_fd, result == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
+            transport, result == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
         if (wait_result != WSS_TRANSPORT_RESULT_OK) {
             return wait_result;
         }
@@ -295,6 +321,9 @@ static wss_transport_result_t tls_write_all(
 {
     size_t offset = 0U;
     while (offset < length) {
+        if (operation_cancelled(transport)) {
+            return WSS_TRANSPORT_RESULT_CANCELLED;
+        }
         const int result = mbedtls_ssl_write(&transport->tls, &data[offset], length - offset);
         if (result > 0) {
             offset += (size_t)result;
@@ -304,7 +333,7 @@ static wss_transport_result_t tls_write_all(
             return WSS_TRANSPORT_RESULT_CONNECTION_CLOSED;
         }
         const wss_transport_result_t wait_result = wait_for_socket(
-            transport->socket_fd, result == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
+            transport, result == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
         if (wait_result != WSS_TRANSPORT_RESULT_OK) {
             return wait_result;
         }
@@ -320,6 +349,9 @@ static wss_transport_result_t tls_read_some(
     uint64_t deadline)
 {
     while (true) {
+        if (operation_cancelled(transport)) {
+            return WSS_TRANSPORT_RESULT_CANCELLED;
+        }
         const int result = mbedtls_ssl_read(&transport->tls, data, capacity);
         if (result > 0) {
             *length = (size_t)result;
@@ -332,7 +364,7 @@ static wss_transport_result_t tls_read_some(
             return WSS_TRANSPORT_RESULT_CONNECTION_CLOSED;
         }
         const wss_transport_result_t wait_result = wait_for_socket(
-            transport->socket_fd, result == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
+            transport, result == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
         if (wait_result != WSS_TRANSPORT_RESULT_OK) {
             return wait_result;
         }
@@ -547,6 +579,17 @@ wss_transport_result_t wss_transport_create(wss_transport_t **transport)
     }
     (*transport)->socket_fd = -1;
     return WSS_TRANSPORT_RESULT_OK;
+}
+
+void wss_transport_set_cancel_callback(
+    wss_transport_t *transport,
+    wss_transport_cancel_callback_t callback,
+    void *context)
+{
+    if (transport != NULL) {
+        transport->cancel_callback = callback;
+        transport->cancel_context = context;
+    }
 }
 
 void wss_transport_destroy(wss_transport_t *transport)

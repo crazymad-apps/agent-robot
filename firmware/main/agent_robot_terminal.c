@@ -4,19 +4,40 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "device_connection.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "network_connectivity.h"
 #include "nvs_flash.h"
 
-#define TERMINAL_NETWORK_EVENT_QUEUE_LENGTH 8U
+#define TERMINAL_EVENT_QUEUE_LENGTH 16U
 #define TERMINAL_LIFECYCLE_TASK_STACK_BYTES 4096U
 #define TERMINAL_LIFECYCLE_TASK_PRIORITY 5U
 
 static const char *const TAG = "terminal_lifecycle";
-static QueueHandle_t terminal_network_event_queue;
+typedef enum {
+    TERMINAL_EVENT_NETWORK = 0,
+    TERMINAL_EVENT_DEVICE_CONNECTION,
+} terminal_event_type_t;
+
+typedef struct {
+    terminal_event_type_t type;
+    union {
+        network_connectivity_event_t network;
+        device_connection_event_t device_connection;
+    } value;
+} terminal_event_t;
+
+static QueueHandle_t terminal_event_queue;
 static network_connectivity_t *terminal_network_connectivity;
+static device_connection_t *terminal_device_connection;
+static uint32_t terminal_event_drop_count;
+static uint32_t terminal_device_network_update_error_count;
+
+static void terminal_device_connection_network_changed(
+    bool has_ip,
+    uint64_t ip_epoch);
 
 static const char *network_state_name(network_connectivity_state_t state)
 {
@@ -43,40 +64,160 @@ static void terminal_network_event(
     void *context)
 {
     QueueHandle_t event_queue = context;
-    if (event_queue != NULL) {
-        (void)xQueueSend(event_queue, event, 0U);
+    if (event->type == NETWORK_CONNECTIVITY_EVENT_IP_ACQUIRED) {
+        terminal_device_connection_network_changed(true, event->ip_epoch);
+    } else if (event->type == NETWORK_CONNECTIVITY_EVENT_IP_LOST) {
+        terminal_device_connection_network_changed(false, event->ip_epoch);
+    }
+    const terminal_event_t terminal_event = {
+        .type = TERMINAL_EVENT_NETWORK,
+        .value.network = *event,
+    };
+    if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+        (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+    }
+}
+
+static void terminal_device_connection_event(
+    const device_connection_event_t *event,
+    void *context)
+{
+    QueueHandle_t event_queue = context;
+    const terminal_event_t terminal_event = {
+        .type = TERMINAL_EVENT_DEVICE_CONNECTION,
+        .value.device_connection = *event,
+    };
+    if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+        (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+    }
+}
+
+static const char *device_connection_state_name(device_connection_state_t state)
+{
+    switch (state) {
+        case DEVICE_CONNECTION_STATE_WIFI_DOWN:
+            return "wifi_down";
+        case DEVICE_CONNECTION_STATE_DISCOVERING:
+            return "discovering";
+        case DEVICE_CONNECTION_STATE_CONNECTING:
+            return "connecting";
+        case DEVICE_CONNECTION_STATE_AUTHENTICATING:
+            return "authenticating";
+        case DEVICE_CONNECTION_STATE_ONLINE:
+            return "online";
+        case DEVICE_CONNECTION_STATE_BACKOFF:
+            return "backoff";
+        case DEVICE_CONNECTION_STATE_BLOCKED:
+            return "blocked";
+        default:
+            return "unknown";
+    }
+}
+
+static void terminal_device_connection_event_process(
+    const device_connection_event_t *event)
+{
+    if (event->type == DEVICE_CONNECTION_EVENT_HOST_SELECTED) {
+        ESP_LOGI(
+            TAG,
+            "event=device_host_selected state=%s host_suffix=%s connection_epoch=%llu",
+            device_connection_state_name(event->state),
+            event->installation_id_suffix,
+            (unsigned long long)event->connection_epoch);
+    } else if (event->type == DEVICE_CONNECTION_EVENT_CONTROL_RECEIVED) {
+        ESP_LOGI(
+            TAG,
+            "event=device_control_received state=%s type=%s connection_epoch=%llu",
+            device_connection_state_name(event->state),
+            event->message_type,
+            (unsigned long long)event->connection_epoch);
+    } else if (event->type == DEVICE_CONNECTION_EVENT_FAILURE) {
+        ESP_LOGW(
+            TAG,
+            "event=device_connection_failure state=%s failure=%u selection=%u transport=%u "
+            "block=%u reconnect_delay_ms=%lu connection_epoch=%llu",
+            device_connection_state_name(event->state),
+            (unsigned int)event->failure,
+            (unsigned int)event->selection_result,
+            (unsigned int)event->transport_result,
+            (unsigned int)event->block_reason,
+            (unsigned long)event->reconnect_delay_ms,
+            (unsigned long long)event->connection_epoch);
+    } else {
+        ESP_LOGI(
+            TAG,
+            "event=device_connection_state_changed state=%s block=%u connection_epoch=%llu",
+            device_connection_state_name(event->state),
+            (unsigned int)event->block_reason,
+            (unsigned long long)event->connection_epoch);
+    }
+}
+
+static void terminal_device_connection_network_changed(
+    bool has_ip,
+    uint64_t ip_epoch)
+{
+    const device_connection_result_t result = device_connection_network_changed(
+        terminal_device_connection,
+        has_ip,
+        ip_epoch);
+    if (result != DEVICE_CONNECTION_RESULT_OK) {
+        (void)__atomic_fetch_add(
+            &terminal_device_network_update_error_count,
+            1U,
+            __ATOMIC_RELAXED);
     }
 }
 
 static void terminal_lifecycle_task(void *context)
 {
     QueueHandle_t event_queue = context;
-    network_connectivity_event_t event;
+    terminal_event_t event;
     while (true) {
         if (xQueueReceive(event_queue, &event, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        if (event.type == NETWORK_CONNECTIVITY_EVENT_IP_ACQUIRED) {
-            esp_ip4_addr_t address = {.addr = event.ipv4_address};
+        const uint32_t dropped =
+            __atomic_exchange_n(&terminal_event_drop_count, 0U, __ATOMIC_RELAXED);
+        if (dropped != 0U) {
+            ESP_LOGE(TAG, "event=terminal_event_queue_overflow dropped=%lu", (unsigned long)dropped);
+        }
+        const uint32_t network_update_errors = __atomic_exchange_n(
+            &terminal_device_network_update_error_count,
+            0U,
+            __ATOMIC_RELAXED);
+        if (network_update_errors != 0U) {
+            ESP_LOGE(
+                TAG,
+                "event=device_network_update_failed count=%lu",
+                (unsigned long)network_update_errors);
+        }
+        if (event.type == TERMINAL_EVENT_DEVICE_CONNECTION) {
+            terminal_device_connection_event_process(&event.value.device_connection);
+            continue;
+        }
+        const network_connectivity_event_t *network_event = &event.value.network;
+        if (network_event->type == NETWORK_CONNECTIVITY_EVENT_IP_ACQUIRED) {
+            esp_ip4_addr_t address = {.addr = network_event->ipv4_address};
             ESP_LOGI(
                 TAG,
                 "event=network_ip_acquired state=%s ip=" IPSTR " ip_epoch=%llu",
-                network_state_name(event.state),
+                network_state_name(network_event->state),
                 IP2STR(&address),
-                (unsigned long long)event.ip_epoch);
-        } else if (event.type == NETWORK_CONNECTIVITY_EVENT_IP_LOST) {
+                (unsigned long long)network_event->ip_epoch);
+        } else if (network_event->type == NETWORK_CONNECTIVITY_EVENT_IP_LOST) {
             ESP_LOGW(
                 TAG,
                 "event=network_ip_lost state=%s ip_epoch=%llu reason=%u",
-                network_state_name(event.state),
-                (unsigned long long)event.ip_epoch,
-                event.disconnect_reason);
+                network_state_name(network_event->state),
+                (unsigned long long)network_event->ip_epoch,
+                network_event->disconnect_reason);
         } else {
             ESP_LOGI(
                 TAG,
                 "event=network_state_changed state=%s reconnect_delay_ms=%lu",
-                network_state_name(event.state),
-                (unsigned long)event.reconnect_delay_ms);
+                network_state_name(network_event->state),
+                (unsigned long)network_event->reconnect_delay_ms);
         }
     }
 }
@@ -97,25 +238,41 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    terminal_network_event_queue = xQueueCreate(
-        TERMINAL_NETWORK_EVENT_QUEUE_LENGTH,
-        sizeof(network_connectivity_event_t));
-    ESP_ERROR_CHECK(terminal_network_event_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
+    terminal_event_queue = xQueueCreate(
+        TERMINAL_EVENT_QUEUE_LENGTH,
+        sizeof(terminal_event_t));
+    ESP_ERROR_CHECK(terminal_event_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
     ESP_ERROR_CHECK(
         xTaskCreate(
             terminal_lifecycle_task,
             "terminal_lifecycle",
             TERMINAL_LIFECYCLE_TASK_STACK_BYTES,
-            terminal_network_event_queue,
+            terminal_event_queue,
             TERMINAL_LIFECYCLE_TASK_PRIORITY,
             NULL)
                 == pdPASS
             ? ESP_OK
             : ESP_ERR_NO_MEM);
 
+    const device_connection_config_t device_connection_config = {
+        .identity = {.paired = false},
+        .event_callback = terminal_device_connection_event,
+        .event_context = terminal_event_queue,
+    };
+    ESP_ERROR_CHECK(
+        device_connection_create(
+            &device_connection_config,
+            &terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+    ESP_ERROR_CHECK(
+        device_connection_start(terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+
     const network_connectivity_config_t network_config = {
         .event_callback = terminal_network_event,
-        .event_context = terminal_network_event_queue,
+        .event_context = terminal_event_queue,
     };
     ESP_ERROR_CHECK(
         network_connectivity_create(
@@ -129,5 +286,5 @@ void app_main(void)
                 == NETWORK_CONNECTIVITY_RESULT_OK
             ? ESP_OK
             : ESP_FAIL);
-    ESP_LOGI(TAG, "event=terminal_boot status=network_started");
+    ESP_LOGI(TAG, "event=terminal_boot status=connection_services_started");
 }

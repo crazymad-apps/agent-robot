@@ -66,9 +66,18 @@ void device_connection_supervisor_got_ip(
     device_connection_supervisor_t *supervisor,
     uint64_t now_ms);
 
+void device_connection_supervisor_identity_changed(
+    device_connection_supervisor_t *supervisor);
+
 bool device_connection_supervisor_connect_discovered(
     device_connection_supervisor_t *supervisor,
     uint64_t *connection_epoch);
+
+bool device_connection_supervisor_discovery_failed(
+    device_connection_supervisor_t *supervisor,
+    device_connection_failure_t failure,
+    uint64_t now_ms,
+    uint32_t jitter_sample);
 
 bool device_connection_supervisor_transport_ready(
     device_connection_supervisor_t *supervisor,

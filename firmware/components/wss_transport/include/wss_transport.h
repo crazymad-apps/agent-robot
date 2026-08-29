@@ -13,6 +13,8 @@
 
 typedef struct wss_transport wss_transport_t;
 
+typedef bool (*wss_transport_cancel_callback_t)(void *context);
+
 typedef enum {
     WSS_TRANSPORT_RESULT_OK = 0,
     WSS_TRANSPORT_RESULT_INVALID_ARGUMENT,
@@ -26,6 +28,7 @@ typedef enum {
     WSS_TRANSPORT_RESULT_PROTOCOL_ERROR,
     WSS_TRANSPORT_RESULT_CAPACITY_EXCEEDED,
     WSS_TRANSPORT_RESULT_CONNECTION_CLOSED,
+    WSS_TRANSPORT_RESULT_CANCELLED,
 } wss_transport_result_t;
 
 typedef enum {
@@ -50,6 +53,15 @@ typedef struct {
 } wss_transport_message_t;
 
 wss_transport_result_t wss_transport_create(wss_transport_t **transport);
+
+/*
+ * The callback is polled from blocking transport operations and must not
+ * block. Returning true cancels the current operation and closes its socket.
+ */
+void wss_transport_set_cancel_callback(
+    wss_transport_t *transport,
+    wss_transport_cancel_callback_t callback,
+    void *context);
 
 void wss_transport_destroy(wss_transport_t *transport);
 

@@ -8,6 +8,10 @@
 
 #define HOST_DISCOVERY_SERVICE_TYPE "_ez-assistant"
 #define HOST_DISCOVERY_SERVICE_PROTOCOL "_tcp"
+#define HOST_DISCOVERY_COMPLETION_GRACE_MS 250U
+
+static mdns_search_once_t *active_query;
+static bool service_initialized;
 
 static host_discovery_result_t copy_text(
     char *destination,
@@ -121,8 +125,13 @@ static bool parse_record(const mdns_result_t *result, host_discovery_record_t *r
 
 host_discovery_result_t host_discovery_initialize(void)
 {
+    if (service_initialized) {
+        return HOST_DISCOVERY_RESULT_OK;
+    }
     const esp_err_t result = mdns_init();
     if (result == ESP_OK) {
+        active_query = NULL;
+        service_initialized = true;
         return HOST_DISCOVERY_RESULT_OK;
     }
     return result == ESP_ERR_NO_MEM ? HOST_DISCOVERY_RESULT_NO_MEMORY
@@ -131,7 +140,67 @@ host_discovery_result_t host_discovery_initialize(void)
 
 void host_discovery_deinitialize(void)
 {
+    if (!service_initialized) {
+        return;
+    }
+    active_query = NULL;
     mdns_free();
+    service_initialized = false;
+}
+
+static host_discovery_result_t restart_discovery_service(void)
+{
+    active_query = NULL;
+    mdns_free();
+    service_initialized = false;
+
+    const esp_err_t result = mdns_init();
+    if (result == ESP_OK) {
+        service_initialized = true;
+        return HOST_DISCOVERY_RESULT_UNAVAILABLE;
+    }
+    return result == ESP_ERR_NO_MEM ? HOST_DISCOVERY_RESULT_NO_MEMORY
+                                    : HOST_DISCOVERY_RESULT_UNAVAILABLE;
+}
+
+static host_discovery_result_t query_results(
+    uint32_t timeout_ms,
+    size_t max_results,
+    mdns_result_t **results)
+{
+    mdns_search_once_t *query = active_query;
+    uint8_t result_count = 0U;
+    if (query != NULL) {
+        if (!mdns_query_async_get_results(query, 0U, results, &result_count)) {
+            return restart_discovery_service();
+        }
+    } else {
+        query = mdns_query_async_new(
+            NULL,
+            HOST_DISCOVERY_SERVICE_TYPE,
+            HOST_DISCOVERY_SERVICE_PROTOCOL,
+            MDNS_TYPE_PTR,
+            timeout_ms,
+            max_results,
+            NULL);
+        if (query == NULL) {
+            return HOST_DISCOVERY_RESULT_NO_MEMORY;
+        }
+        active_query = query;
+        if (!mdns_query_async_get_results(
+                query,
+                timeout_ms + HOST_DISCOVERY_COMPLETION_GRACE_MS,
+                results,
+                &result_count)) {
+            return HOST_DISCOVERY_RESULT_UNAVAILABLE;
+        }
+    }
+    if (mdns_query_async_delete(query) != ESP_OK) {
+        *results = NULL;
+        return restart_discovery_service();
+    }
+    active_query = NULL;
+    return HOST_DISCOVERY_RESULT_OK;
 }
 
 host_discovery_result_t host_discovery_query(
@@ -140,22 +209,28 @@ host_discovery_result_t host_discovery_query(
     size_t record_capacity,
     size_t *record_count)
 {
-    if (timeout_ms == 0U || records == NULL || record_capacity == 0U || record_count == NULL ||
+    if (timeout_ms == 0U ||
+        timeout_ms > UINT32_MAX - HOST_DISCOVERY_COMPLETION_GRACE_MS || records == NULL ||
+        record_capacity == 0U || record_count == NULL ||
         record_capacity > HOST_DISCOVERY_MAX_RESULTS) {
         return HOST_DISCOVERY_RESULT_INVALID_ARGUMENT;
     }
     *record_count = 0U;
 
+    if (!service_initialized) {
+        const host_discovery_result_t initialization_result = host_discovery_initialize();
+        if (initialization_result != HOST_DISCOVERY_RESULT_OK) {
+            return initialization_result;
+        }
+    }
+
     mdns_result_t *results = NULL;
-    const esp_err_t query_result = mdns_query_ptr(
-        HOST_DISCOVERY_SERVICE_TYPE,
-        HOST_DISCOVERY_SERVICE_PROTOCOL,
+    const host_discovery_result_t query_result = query_results(
         timeout_ms,
         record_capacity + 1U,
         &results);
-    if (query_result != ESP_OK) {
-        return query_result == ESP_ERR_NO_MEM ? HOST_DISCOVERY_RESULT_NO_MEMORY
-                                              : HOST_DISCOVERY_RESULT_UNAVAILABLE;
+    if (query_result != HOST_DISCOVERY_RESULT_OK) {
+        return query_result;
     }
 
     host_discovery_result_t status = HOST_DISCOVERY_RESULT_OK;

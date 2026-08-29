@@ -79,8 +79,11 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   DER pin、严格 Upgrade、RFC 6455 必需子集、connection epoch、单 intent、heartbeat 与抖动退避均有
   host 边界测试。独立 target transport image 已在同一开发板上验证错误 pin 阻断以及正确 pin 连接真实
   ez-assistant `/device` 并收到 `auth_challenge`；target fault image 又完成 pin 前零应用字节、坏 Upgrade、
-  64 KiB 分片中穿插 Ping、binary/Close、超长帧、半包超时和错误 masking。AP、Host 重启及端口变化的
-  完整恢复矩阵尚未执行，因此 P2 仍为部分通过。
+  64 KiB 分片中穿插 Ping、binary/Close、超长帧、半包超时和错误 masking。
+- P2 已新增正式 `network_connectivity` 服务，独占 NVS Wi-Fi 凭据、Station 生命周期、boot-local IP
+  epoch 和 1/2/4/8/16/30 秒有界退避。独立 target image 在 ESP32-S3 上完成首次取 IP、主动 STA
+  断线、1 秒首轮退避、自动恢复和 epoch `1 → 2` 验证。物理 AP 关闭/恢复、Host 重启及端口变化的
+  完整串联矩阵尚未执行，因此 P2 仍为部分通过。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
   “由上游 commit 复现”门仍待上游正式提交后通过。

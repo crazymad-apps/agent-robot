@@ -190,6 +190,8 @@ Drivers / BSP
 
 - GPIO 和板卡差异只存在于 BSP/board config。
 - 驱动不直接发送协议消息，网络层不直接操作硬件。
+- Network Connectivity Service 是 Wi-Fi Station、NVS 凭据、IP epoch 和 Wi-Fi 退避的唯一所有者；
+  Device Connection Supervisor 只消费 IP 可用性事件，不直接调用 Wi-Fi connect。
 - 状态变更通过有界事件队列传递，音频数据使用预分配 ring buffer。
 - UI 只展示 Controller 提供的投影，不推断网络或 Runtime 状态。
 

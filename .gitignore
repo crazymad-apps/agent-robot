@@ -13,6 +13,9 @@ firmware/test/target_crypto/sdkconfig.old
 firmware/test/target_transport/build/
 firmware/test/target_transport/sdkconfig
 firmware/test/target_transport/sdkconfig.old
+firmware/test/target_transport_faults/build/
+firmware/test/target_transport_faults/sdkconfig
+firmware/test/target_transport_faults/sdkconfig.old
 
 # Local credentials and machine-specific overrides
 firmware/.env

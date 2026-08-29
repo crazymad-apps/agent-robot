@@ -26,6 +26,13 @@ validation image. With the ez-assistant Device Gateway running and the board's `
 credentials provisioned, use `./test/run_target_transport_validation.sh flash-monitor <serial-port>`
 to exercise the production transport components on the ESP32-S3.
 
+The transport fault matrix uses two terminals. Start the ephemeral TLS/mDNS Host with
+`./test/run_transport_fault_host.sh`, then run
+`./test/run_target_transport_fault_validation.sh flash-monitor <serial-port>`. The Host injects bad
+Upgrade and frame conditions while the ESP32-S3 image validates the production transport response.
+Its generated certificate and private key remain in a temporary directory and are deleted when the
+Host exits.
+
 The production component boundaries are defined in
 [`components/README.md`](components/README.md). Components are added only when their formal API and
 tests enter the implementation; archived Demo source is not copied into this tree.

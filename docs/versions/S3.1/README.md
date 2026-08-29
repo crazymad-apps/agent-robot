@@ -78,8 +78,9 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
 - P2 已实现正式 `host_discovery`、`wss_transport` 和 connection Supervisor：唯一 Host 选择、TLS peer
   DER pin、严格 Upgrade、RFC 6455 必需子集、connection epoch、单 intent、heartbeat 与抖动退避均有
   host 边界测试。独立 target transport image 已在同一开发板上验证错误 pin 阻断以及正确 pin 连接真实
-  ez-assistant `/device` 并收到 `auth_challenge`；完整 fault-injection/重连矩阵尚未执行，因此 P2 仍为
-  部分通过。
+  ez-assistant `/device` 并收到 `auth_challenge`；target fault image 又完成 pin 前零应用字节、坏 Upgrade、
+  64 KiB 分片中穿插 Ping、binary/Close、超长帧、半包超时和错误 masking。AP、Host 重启及端口变化的
+  完整恢复矩阵尚未执行，因此 P2 仍为部分通过。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
 - ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
   “由上游 commit 复现”门仍待上游正式提交后通过。

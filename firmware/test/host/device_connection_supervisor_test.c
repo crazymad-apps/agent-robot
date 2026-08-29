@@ -3,8 +3,65 @@
 #include <assert.h>
 #include <stdio.h>
 
+static uint64_t begin_connection(device_connection_supervisor_t *supervisor)
+{
+    uint64_t epoch = 0U;
+    assert(supervisor->state == DEVICE_CONNECTION_STATE_DISCOVERING);
+    assert(device_connection_supervisor_connect_discovered(supervisor, &epoch));
+    assert(epoch != 0U);
+    return epoch;
+}
+
+static void verify_backoff_schedule(void)
+{
+    static const uint32_t expected_base_ms[] = {1000U, 2000U, 4000U, 8000U, 15000U, 15000U};
+    device_connection_supervisor_t supervisor;
+    device_connection_supervisor_initialize(&supervisor);
+    device_connection_supervisor_got_ip(&supervisor, 0U);
+
+    uint64_t now_ms = 0U;
+    for (size_t index = 0U; index < sizeof(expected_base_ms) / sizeof(expected_base_ms[0]); index += 2U) {
+        uint64_t epoch = begin_connection(&supervisor);
+        assert(device_connection_supervisor_fail(
+            &supervisor, epoch, DEVICE_CONNECTION_FAILURE_TRANSIENT, now_ms, 0U));
+        assert(supervisor.backoff_until_ms - now_ms == expected_base_ms[index] * 8U / 10U);
+        now_ms = supervisor.backoff_until_ms;
+        assert(device_connection_supervisor_poll(&supervisor, now_ms, 0U, &epoch) ==
+               DEVICE_CONNECTION_ACTION_CONNECT_CACHED);
+        assert(device_connection_supervisor_fail(
+            &supervisor, epoch, DEVICE_CONNECTION_FAILURE_TRANSIENT, now_ms, 400U));
+        assert(supervisor.backoff_until_ms - now_ms == expected_base_ms[index + 1U] * 12U / 10U);
+        now_ms = supervisor.backoff_until_ms;
+        assert(device_connection_supervisor_poll(&supervisor, now_ms, 0U, &epoch) ==
+               DEVICE_CONNECTION_ACTION_DISCOVER);
+    }
+}
+
+static void verify_stable_connection_reset(void)
+{
+    device_connection_supervisor_t supervisor;
+    device_connection_supervisor_initialize(&supervisor);
+    device_connection_supervisor_got_ip(&supervisor, 0U);
+    uint64_t epoch = begin_connection(&supervisor);
+    assert(device_connection_supervisor_fail(
+        &supervisor, epoch, DEVICE_CONNECTION_FAILURE_TRANSIENT, 0U, 200U));
+    assert(device_connection_supervisor_poll(
+               &supervisor, supervisor.backoff_until_ms, 200U, &epoch) ==
+           DEVICE_CONNECTION_ACTION_CONNECT_CACHED);
+    assert(device_connection_supervisor_transport_ready(&supervisor, epoch));
+    assert(device_connection_supervisor_authenticated(&supervisor, epoch, 1000U));
+    assert(device_connection_supervisor_receive_activity(&supervisor, epoch, 61000U));
+    assert(supervisor.consecutive_failures == 0U);
+    assert(device_connection_supervisor_fail(
+        &supervisor, epoch, DEVICE_CONNECTION_FAILURE_TRANSIENT, 61001U, 200U));
+    assert(supervisor.backoff_until_ms == 62001U);
+}
+
 int main(void)
 {
+    verify_backoff_schedule();
+    verify_stable_connection_reset();
+
     device_connection_supervisor_t supervisor;
     device_connection_supervisor_initialize(&supervisor);
     assert(supervisor.state == DEVICE_CONNECTION_STATE_WIFI_DOWN);

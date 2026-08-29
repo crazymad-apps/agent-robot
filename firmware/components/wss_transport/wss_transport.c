@@ -323,7 +323,6 @@ static wss_transport_result_t tls_read_some(
         const int result = mbedtls_ssl_read(&transport->tls, data, capacity);
         if (result > 0) {
             *length = (size_t)result;
-            transport->last_receive_time_ms = monotonic_ms();
             return WSS_TRANSPORT_RESULT_OK;
         }
         if (result == 0 || result == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
@@ -705,6 +704,7 @@ static wss_transport_result_t deliver_control_frame(
     message->payload_length = length;
     message->close_code = 0U;
     if (header->opcode == WSS_OPCODE_PING) {
+        transport->last_receive_time_ms = monotonic_ms();
         result = send_frame(transport, WSS_OPCODE_PONG, payload, length, deadline);
         if (result != WSS_TRANSPORT_RESULT_OK) {
             return result;
@@ -713,6 +713,7 @@ static wss_transport_result_t deliver_control_frame(
         return WSS_TRANSPORT_RESULT_OK;
     }
     if (header->opcode == WSS_OPCODE_PONG) {
+        transport->last_receive_time_ms = monotonic_ms();
         message->type = WSS_TRANSPORT_MESSAGE_PONG;
         return WSS_TRANSPORT_RESULT_OK;
     }
@@ -727,6 +728,7 @@ static wss_transport_result_t deliver_control_frame(
             return WSS_TRANSPORT_RESULT_PROTOCOL_ERROR;
         }
     }
+    transport->last_receive_time_ms = monotonic_ms();
     if (!transport->close_sent) {
         result = send_frame(transport, WSS_OPCODE_CLOSE, payload, length, deadline);
         if (result != WSS_TRANSPORT_RESULT_OK) {
@@ -788,6 +790,7 @@ receive_next_frame:
             return result;
         }
         transport->fragment_length += frame_length;
+        transport->last_receive_time_ms = monotonic_ms();
         if (!header.final) {
             goto receive_next_frame;
         }
@@ -828,6 +831,7 @@ receive_next_frame:
             return result;
         }
         transport->fragment_length = frame_length;
+        transport->last_receive_time_ms = monotonic_ms();
         goto receive_next_frame;
     }
 
@@ -847,6 +851,7 @@ receive_next_frame:
         close_connection(transport);
         return WSS_TRANSPORT_RESULT_PROTOCOL_ERROR;
     }
+    transport->last_receive_time_ms = monotonic_ms();
     message->type = binary ? WSS_TRANSPORT_MESSAGE_BINARY : WSS_TRANSPORT_MESSAGE_TEXT;
     message->payload_length = frame_length;
     message->close_code = 0U;

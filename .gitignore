@@ -19,6 +19,9 @@ firmware/test/target_transport_faults/sdkconfig.old
 firmware/test/target_device_connection_recovery/build/
 firmware/test/target_device_connection_recovery/sdkconfig
 firmware/test/target_device_connection_recovery/sdkconfig.old
+firmware/test/target_device_authentication/build/
+firmware/test/target_device_authentication/sdkconfig
+firmware/test/target_device_authentication/sdkconfig.old
 firmware/test/target_network_connectivity/build/
 firmware/test/target_network_connectivity/sdkconfig
 firmware/test/target_network_connectivity/sdkconfig.old

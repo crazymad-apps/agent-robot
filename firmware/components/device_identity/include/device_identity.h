@@ -41,6 +41,9 @@ typedef struct {
     uint8_t public_key[DEVICE_ED25519_PUBLIC_KEY_BYTES];
 } device_identity_record_t;
 
+device_identity_result_t device_identity_record_validate(
+    const device_identity_record_t *record);
+
 device_identity_result_t device_identity_open(device_identity_t **identity);
 
 device_identity_result_t device_identity_load(

@@ -4,7 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "device_capabilities.h"
 #include "device_connection_supervisor.h"
+#include "device_identity.h"
 #include "device_protocol_limits.h"
 #include "host_discovery.h"
 #include "wss_transport.h"
@@ -53,6 +55,10 @@ typedef void (*device_connection_event_callback_t)(
 
 typedef struct {
     device_connection_identity_t identity;
+    device_identity_t *identity_store;
+    device_capabilities_t capabilities;
+    device_output_preference_t output_preference;
+    const char *client_version;
     device_connection_event_callback_t event_callback;
     void *event_context;
 } device_connection_config_t;

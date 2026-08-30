@@ -3,7 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "device_authentication.h"
+#include "device_base64url.h"
 #include "device_control_envelope.h"
+#include "device_identity.h"
 #include "device_message_replay_window.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
@@ -19,7 +22,17 @@
 #define DEVICE_CONNECTION_TLS_TIMEOUT_MS 10000U
 #define DEVICE_CONNECTION_UPGRADE_TIMEOUT_MS 10000U
 #define DEVICE_CONNECTION_RECEIVE_TIMEOUT_MS 30000U
+#define DEVICE_CONNECTION_SEND_TIMEOUT_MS 5000U
 #define DEVICE_CONNECTION_STOPPED_BIT BIT0
+#define DEVICE_CONNECTION_MESSAGE_RANDOM_BYTES 18U
+#define DEVICE_CONNECTION_MESSAGE_ID_BYTES 24U
+#define DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES 2048U
+
+typedef struct {
+    bool hello_sent;
+    char device_id[DEVICE_IDENTITY_DEVICE_ID_MAX_BYTES + 1U];
+    char connection_id[DEVICE_AUTHENTICATION_CONNECTION_ID_MAX_BYTES + 1U];
+} device_connection_authentication_t;
 
 typedef struct {
     bool network_has_ip;
@@ -34,6 +47,10 @@ struct device_connection {
     device_connection_inputs_t inputs;
     device_connection_event_callback_t event_callback;
     void *event_context;
+    device_identity_t *identity_store;
+    device_capabilities_t capabilities;
+    device_output_preference_t output_preference;
+    char client_version[DEVICE_AUTHENTICATION_CLIENT_VERSION_MAX_BYTES + 1U];
     TaskHandle_t task;
     EventGroupHandle_t lifecycle_events;
     bool started;
@@ -47,6 +64,7 @@ struct device_connection {
     uint64_t observed_identity_revision;
     device_connection_identity_t identity;
     device_message_replay_window_t *replay_window;
+    device_connection_authentication_t authentication;
 };
 
 static uint64_t monotonic_ms(void)
@@ -364,10 +382,297 @@ static void connect_transport(device_connection_t *connection)
         record_failure(connection, transport_failure(result), result);
         return;
     }
+    memset(&connection->authentication, 0, sizeof(connection->authentication));
     if (device_connection_supervisor_transport_ready(
             &connection->supervisor,
             connection->supervisor.connection_epoch)) {
         emit_state_changed(connection);
+    }
+}
+
+static bool create_random_token(
+    size_t random_byte_count,
+    char *encoded,
+    size_t encoded_capacity)
+{
+    if (random_byte_count > DEVICE_AUTHENTICATION_NONCE_BYTES ||
+        encoded == NULL || encoded_capacity == 0U) {
+        return false;
+    }
+    uint8_t random_bytes[DEVICE_AUTHENTICATION_NONCE_BYTES];
+    esp_fill_random(random_bytes, random_byte_count);
+    size_t encoded_size = 0U;
+    const device_crypto_result_t result = device_base64url_encode(
+        random_bytes,
+        random_byte_count,
+        encoded,
+        encoded_capacity - 1U,
+        &encoded_size);
+    memset(random_bytes, 0, sizeof(random_bytes));
+    if (result != DEVICE_CRYPTO_RESULT_OK || encoded_size >= encoded_capacity) {
+        return false;
+    }
+    encoded[encoded_size] = '\0';
+    return true;
+}
+
+static bool authentication_identity_load(
+    device_connection_t *connection,
+    device_identity_record_t *identity)
+{
+    if (connection->identity_store == NULL ||
+        device_identity_load(connection->identity_store, identity) !=
+            DEVICE_IDENTITY_RESULT_OK ||
+        (identity->state != DEVICE_IDENTITY_STATE_PENDING &&
+         identity->state != DEVICE_IDENTITY_STATE_ACTIVE) ||
+        strcmp(
+            identity->host_installation_id,
+            connection->cached_host.installation_id) != 0 ||
+        strcmp(
+            identity->host_certificate_fingerprint,
+            connection->cached_host.certificate_fingerprint) != 0) {
+        memset(identity, 0, sizeof(*identity));
+        return false;
+    }
+    return true;
+}
+
+static void authentication_challenge_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    device_authentication_challenge_t challenge = {0};
+    if (connection->authentication.hello_sent ||
+        device_authentication_decode_challenge(envelope, &challenge) !=
+            DEVICE_AUTHENTICATION_RESULT_OK) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    device_identity_record_t identity = {0};
+    if (!authentication_identity_load(connection, &identity)) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    char message_id[DEVICE_CONNECTION_MESSAGE_ID_BYTES + 1U];
+    char device_nonce[DEVICE_AUTHENTICATION_NONCE_BASE64URL_BYTES + 1U];
+    char encoded[DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES];
+    size_t encoded_size = 0U;
+    const bool tokens_created = create_random_token(
+                                    DEVICE_CONNECTION_MESSAGE_RANDOM_BYTES,
+                                    message_id,
+                                    sizeof(message_id)) &&
+                                create_random_token(
+                                    DEVICE_AUTHENTICATION_NONCE_BYTES,
+                                    device_nonce,
+                                    sizeof(device_nonce));
+    const device_authentication_result_t authentication_result = tokens_created
+        ? device_authentication_encode_hello(
+              message_id,
+              &challenge,
+              &identity,
+              device_nonce,
+              &connection->capabilities,
+              connection->output_preference,
+              connection->client_version,
+              encoded,
+              sizeof(encoded),
+              &encoded_size)
+        : DEVICE_AUTHENTICATION_RESULT_CRYPTOGRAPHY_FAILED;
+    if (authentication_result != DEVICE_AUTHENTICATION_RESULT_OK) {
+        memset(&identity, 0, sizeof(identity));
+        memset(device_nonce, 0, sizeof(device_nonce));
+        memset(encoded, 0, sizeof(encoded));
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    const wss_transport_result_t send_result = wss_transport_send_text(
+        connection->transport,
+        (const uint8_t *)encoded,
+        encoded_size,
+        DEVICE_CONNECTION_SEND_TIMEOUT_MS);
+    if (send_result == WSS_TRANSPORT_RESULT_OK) {
+        connection->authentication.hello_sent = true;
+        memcpy(
+            connection->authentication.device_id,
+            identity.device_id,
+            strlen(identity.device_id) + 1U);
+        memcpy(
+            connection->authentication.connection_id,
+            challenge.connection_id,
+            strlen(challenge.connection_id) + 1U);
+    } else {
+        record_failure(connection, transport_failure(send_result), send_result);
+    }
+    memset(&identity, 0, sizeof(identity));
+    memset(device_nonce, 0, sizeof(device_nonce));
+    memset(encoded, 0, sizeof(encoded));
+}
+
+static void authentication_ack_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    device_authentication_ack_t ack = {0};
+    if (!connection->authentication.hello_sent ||
+        device_authentication_decode_ack(
+            envelope,
+            connection->authentication.device_id,
+            connection->authentication.connection_id,
+            &ack) != DEVICE_AUTHENTICATION_RESULT_OK) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    device_identity_record_t identity = {0};
+    if (!authentication_identity_load(connection, &identity)) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    if (identity.state == DEVICE_IDENTITY_STATE_PENDING &&
+        device_identity_activate(connection->identity_store, identity.device_id) !=
+            DEVICE_IDENTITY_RESULT_OK) {
+        memset(&identity, 0, sizeof(identity));
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    memset(&identity, 0, sizeof(identity));
+    if (device_connection_supervisor_authenticated(
+            &connection->supervisor,
+            connection->supervisor.connection_epoch,
+            monotonic_ms())) {
+        emit_state_changed(connection);
+    }
+}
+
+static void clear_credential_and_discover(device_connection_t *connection)
+{
+    if (connection->identity_store == NULL ||
+        device_identity_clear_credential(connection->identity_store, true) !=
+            DEVICE_IDENTITY_RESULT_OK) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    const device_connection_identity_t unpaired_identity = {0};
+    if (device_connection_update_identity(connection, &unpaired_identity) !=
+        DEVICE_CONNECTION_RESULT_OK) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+    }
+}
+
+static void authentication_error_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    device_authentication_error_t error = {0};
+    if (device_authentication_decode_error(envelope, &error) !=
+        DEVICE_AUTHENTICATION_RESULT_OK) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    if (strcmp(error.code, "device_revoked") == 0 && !error.recoverable) {
+        clear_credential_and_discover(connection);
+        return;
+    }
+    if (strcmp(error.code, "authentication_failed") == 0) {
+        device_identity_record_t identity = {0};
+        if (!authentication_identity_load(connection, &identity)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_IDENTITY,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+        const bool pending = identity.state == DEVICE_IDENTITY_STATE_PENDING;
+        memset(&identity, 0, sizeof(identity));
+        if (pending) {
+            clear_credential_and_discover(connection);
+            return;
+        }
+    }
+    record_failure(
+        connection,
+        strcmp(error.code, "authentication_failed") == 0
+            ? DEVICE_CONNECTION_FAILURE_IDENTITY
+            : error.recoverable ? DEVICE_CONNECTION_FAILURE_TRANSIENT
+                                : DEVICE_CONNECTION_FAILURE_PROTOCOL,
+        WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+}
+
+static void online_control_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    if (strcmp(device_control_envelope_message_type(envelope), "error") == 0) {
+        device_authentication_error_t error = {0};
+        if (device_authentication_decode_error(envelope, &error) !=
+            DEVICE_AUTHENTICATION_RESULT_OK) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+        if (strcmp(error.code, "device_revoked") == 0 && !error.recoverable) {
+            clear_credential_and_discover(connection);
+            return;
+        }
+    }
+    (void)device_connection_supervisor_receive_activity(
+        &connection->supervisor,
+        connection->supervisor.connection_epoch,
+        monotonic_ms());
+}
+
+static void authentication_control_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    const char *message_type = device_control_envelope_message_type(envelope);
+    if (strcmp(message_type, "auth_challenge") == 0) {
+        if (connection->identity.paired && connection->identity_store != NULL) {
+            authentication_challenge_handle(connection, envelope);
+        }
+        return;
+    }
+    if (strcmp(message_type, "hello_ack") == 0) {
+        authentication_ack_handle(connection, envelope);
+        return;
+    }
+    if (strcmp(message_type, "error") == 0) {
+        authentication_error_handle(connection, envelope);
+        return;
+    }
+    if (connection->identity.paired && connection->identity_store != NULL) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
     }
 }
 
@@ -433,6 +738,11 @@ static void receive_transport_message(device_connection_t *connection)
         WSS_TRANSPORT_RESULT_OK,
         device_control_envelope_message_id(envelope),
         device_control_envelope_message_type(envelope));
+    if (connection->supervisor.state == DEVICE_CONNECTION_STATE_AUTHENTICATING) {
+        authentication_control_handle(connection, envelope);
+    } else if (connection->supervisor.state == DEVICE_CONNECTION_STATE_ONLINE) {
+        online_control_handle(connection, envelope);
+    }
     device_control_envelope_release(envelope);
 }
 
@@ -597,6 +907,22 @@ device_connection_result_t device_connection_create(
     (*connection)->identity = config->identity;
     (*connection)->event_callback = config->event_callback;
     (*connection)->event_context = config->event_context;
+    (*connection)->identity_store = config->identity_store;
+    (*connection)->capabilities = config->capabilities;
+    (*connection)->output_preference = config->output_preference;
+    if (config->client_version != NULL) {
+        const size_t client_version_length = strlen(config->client_version);
+        if (client_version_length == 0U ||
+            client_version_length > DEVICE_AUTHENTICATION_CLIENT_VERSION_MAX_BYTES) {
+            free(*connection);
+            *connection = NULL;
+            return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+        }
+        memcpy(
+            (*connection)->client_version,
+            config->client_version,
+            client_version_length + 1U);
+    }
     (*connection)->lifecycle_events = xEventGroupCreate();
     if ((*connection)->lifecycle_events == NULL) {
         free(*connection);

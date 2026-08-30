@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "device_identity.h"
+#include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -322,6 +323,18 @@ void app_main(void)
     if (identity_available) {
         const device_connection_config_t device_connection_config = {
             .identity = connection_identity,
+            .identity_store = terminal_device_identity,
+            .capabilities = {
+                .input_text = false,
+                .input_pcm16_16k_mono = true,
+                .output_text = false,
+                .output_pcm16_16k_mono = true,
+                .playback_cancel = true,
+                .display_status = true,
+                .display_transcript = false,
+            },
+            .output_preference = DEVICE_OUTPUT_PREFERENCE_AUDIO,
+            .client_version = esp_app_get_description()->version,
             .event_callback = terminal_device_connection_event,
             .event_context = terminal_event_queue,
         };

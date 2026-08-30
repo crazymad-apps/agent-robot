@@ -9,7 +9,9 @@
 #include "device_identity_record.h"
 #include "nvs.h"
 
+#ifndef DEVICE_IDENTITY_NVS_NAMESPACE
 #define DEVICE_IDENTITY_NVS_NAMESPACE "dev_identity"
+#endif
 #define DEVICE_IDENTITY_NVS_KEY "credential"
 
 struct device_identity {

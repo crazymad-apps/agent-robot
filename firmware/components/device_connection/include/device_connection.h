@@ -62,7 +62,8 @@ typedef void (*device_connection_event_callback_t)(
     void *context);
 
 typedef enum {
-    DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED = 0,
+    DEVICE_CONNECTION_MEDIA_EVENT_INPUT_SEGMENT_ACCEPTED = 0,
+    DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED,
     DEVICE_CONNECTION_MEDIA_EVENT_STATE_CHANGED,
     DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_START,
     DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_END,
@@ -74,6 +75,7 @@ typedef struct {
     device_connection_media_event_type_t type;
     uint64_t connection_epoch;
     union {
+        device_media_input_segment_accepted_t input_segment_accepted;
         device_media_input_accepted_t input_accepted;
         device_media_state_changed_t state_changed;
         device_media_playback_start_t playback_start;

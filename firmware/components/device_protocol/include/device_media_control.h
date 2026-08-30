@@ -47,6 +47,11 @@ typedef struct {
 } device_media_input_accepted_t;
 
 typedef struct {
+    char client_input_id[DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U];
+    uint32_t stream_id;
+} device_media_input_segment_accepted_t;
+
+typedef struct {
     bool has_run_id;
     char run_id[DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES + 1U];
     bool has_client_input_id;
@@ -91,6 +96,10 @@ device_media_control_encode_playback_cancel(const char *message_id, const char *
 device_protocol_result_t
 device_media_control_decode_input_accepted(const device_control_envelope_t *envelope,
                                            device_media_input_accepted_t *accepted);
+
+device_protocol_result_t device_media_control_decode_input_segment_accepted(
+    const device_control_envelope_t *envelope,
+    device_media_input_segment_accepted_t *accepted);
 
 device_protocol_result_t
 device_media_control_decode_state_changed(const device_control_envelope_t *envelope,

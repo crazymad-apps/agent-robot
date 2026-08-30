@@ -39,7 +39,8 @@ typedef enum {
     VOICE_INPUT_CONTROL_SEAL,
     VOICE_INPUT_CONTROL_CANCEL,
     VOICE_INPUT_CONTROL_CONNECTION_CHANGED,
-    VOICE_INPUT_CONTROL_ACCEPTED,
+    VOICE_INPUT_CONTROL_SEGMENT_ACCEPTED,
+    VOICE_INPUT_CONTROL_FINAL_ACCEPTED,
     VOICE_INPUT_CONTROL_REJECTED,
 } voice_input_control_type_t;
 
@@ -70,8 +71,12 @@ typedef struct {
         } connection;
         struct {
             uint64_t connection_epoch;
+            device_media_input_segment_accepted_t accepted;
+        } segment_accepted;
+        struct {
+            uint64_t connection_epoch;
             device_media_input_accepted_t accepted;
-        } accepted;
+        } final_accepted;
         struct {
             uint64_t connection_epoch;
             char client_input_id[DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U];
@@ -597,21 +602,38 @@ static void connection_process(
     }
 }
 
-static void accepted_process(
+static void segment_accepted_process(
     voice_input_t *voice_input,
     const voice_input_control_t *control)
 {
-    if (control->value.accepted.connection_epoch != voice_input->connection_epoch ||
+    if (control->value.segment_accepted.connection_epoch != voice_input->connection_epoch ||
         utterance_cache_state(voice_input->cache) == UTTERANCE_CACHE_STATE_EMPTY ||
-        strcmp(
-            control->value.accepted.accepted.client_input_id,
-            voice_input->client_input_id) != 0) {
+        control->value.segment_accepted.accepted.stream_id != voice_input->stream_id ||
+        strcmp(control->value.segment_accepted.accepted.client_input_id,
+               voice_input->client_input_id) != 0) {
         return;
     }
     taskENTER_CRITICAL(&voice_input->status_lock);
-    ++voice_input->status.accepted_input_count;
+    ++voice_input->status.accepted_segment_count;
     taskEXIT_CRITICAL(&voice_input->status_lock);
-    emit_event(voice_input, VOICE_INPUT_EVENT_ACCEPTED, VOICE_INPUT_RESULT_OK);
+    emit_event(voice_input, VOICE_INPUT_EVENT_SEGMENT_ACCEPTED, VOICE_INPUT_RESULT_OK);
+    input_clear(voice_input, VOICE_INPUT_STATE_IDLE);
+}
+
+static void final_accepted_process(
+    voice_input_t *voice_input,
+    const voice_input_control_t *control)
+{
+    if (control->value.final_accepted.connection_epoch != voice_input->connection_epoch ||
+        utterance_cache_state(voice_input->cache) == UTTERANCE_CACHE_STATE_EMPTY ||
+        strcmp(control->value.final_accepted.accepted.client_input_id,
+               voice_input->client_input_id) != 0) {
+        return;
+    }
+    taskENTER_CRITICAL(&voice_input->status_lock);
+    ++voice_input->status.accepted_segment_count;
+    taskEXIT_CRITICAL(&voice_input->status_lock);
+    emit_event(voice_input, VOICE_INPUT_EVENT_SEGMENT_ACCEPTED, VOICE_INPUT_RESULT_OK);
     input_clear(voice_input, VOICE_INPUT_STATE_IDLE);
 }
 
@@ -664,8 +686,11 @@ static void control_process(
         case VOICE_INPUT_CONTROL_CONNECTION_CHANGED:
             connection_process(voice_input, control);
             break;
-        case VOICE_INPUT_CONTROL_ACCEPTED:
-            accepted_process(voice_input, control);
+        case VOICE_INPUT_CONTROL_SEGMENT_ACCEPTED:
+            segment_accepted_process(voice_input, control);
+            break;
+        case VOICE_INPUT_CONTROL_FINAL_ACCEPTED:
+            final_accepted_process(voice_input, control);
             break;
         case VOICE_INPUT_CONTROL_REJECTED:
             rejected_process(voice_input, control);
@@ -1003,10 +1028,10 @@ voice_input_result_t voice_input_connection_changed(
     return result;
 }
 
-voice_input_result_t voice_input_accept(
+voice_input_result_t voice_input_segment_accept(
     voice_input_t *voice_input,
     uint64_t connection_epoch,
-    const device_media_input_accepted_t *accepted)
+    const device_media_input_segment_accepted_t *accepted)
 {
     if (voice_input == NULL || connection_epoch == 0U || accepted == NULL ||
         accepted->client_input_id[0] == '\0' ||
@@ -1017,8 +1042,28 @@ voice_input_result_t voice_input_accept(
         return VOICE_INPUT_RESULT_INVALID_ARGUMENT;
     }
     const voice_input_control_t control = {
-        .type = VOICE_INPUT_CONTROL_ACCEPTED,
-        .value.accepted = {
+        .type = VOICE_INPUT_CONTROL_SEGMENT_ACCEPTED,
+        .value.segment_accepted = {
+            .connection_epoch = connection_epoch,
+            .accepted = *accepted,
+        },
+    };
+    return control_enqueue(voice_input, &control);
+}
+
+voice_input_result_t voice_input_final_accept(
+    voice_input_t *voice_input,
+    uint64_t connection_epoch,
+    const device_media_input_accepted_t *accepted)
+{
+    if (voice_input == NULL || connection_epoch == 0U || accepted == NULL ||
+        accepted->client_input_id[0] == '\0' ||
+        memchr(accepted->client_input_id, '\0', sizeof(accepted->client_input_id)) == NULL) {
+        return VOICE_INPUT_RESULT_INVALID_ARGUMENT;
+    }
+    const voice_input_control_t control = {
+        .type = VOICE_INPUT_CONTROL_FINAL_ACCEPTED,
+        .value.final_accepted = {
             .connection_epoch = connection_epoch,
             .accepted = *accepted,
         },

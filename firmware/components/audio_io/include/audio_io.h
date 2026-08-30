@@ -134,6 +134,16 @@ audio_io_result_t audio_io_playback_begin(
     uint64_t connection_epoch,
     const device_media_playback_start_t *playback_start);
 
+/*
+ * Registers a downlink stream as intentionally discarded while capture owns
+ * the half-duplex audio hardware. Matching PCM/end frames are then consumed
+ * without entering the playback queue.
+ */
+audio_io_result_t audio_io_playback_discard(
+    audio_io_t *audio_io,
+    uint64_t connection_epoch,
+    const device_media_playback_start_t *playback_start);
+
 audio_io_result_t audio_io_playback_push(
     audio_io_t *audio_io,
     uint64_t connection_epoch,

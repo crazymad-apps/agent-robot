@@ -243,7 +243,7 @@ v1.0 的主要语义：
   `pairing_confirm` / `pairing_bind` / `pairing_bind_ack` / `pairing_commit` /
   `pairing_complete` 完成首次配对。
 - 后续连接使用 `auth_challenge` / `hello` / `hello_ack` 完成认证。
-- `text_input` / `listen_start` / `listen_stop` / `input_accepted`。
+- `text_input` / `listen_start` / `listen_stop` / `input_segment_accepted` / `input_accepted`。
 - `set_output_preference` / `output_preference_changed`。
 - `transcript` / `text_output` / `state_changed`。
 - `playback_start` / `playback_end` / `playback_cancel`。
@@ -286,15 +286,16 @@ disconnected ── connected ──▶ idle
 - 长期架构允许 `listening` 由终端 PTT 或本地唤醒事实驱动，不依赖云端 VAD；S3.1 只实现 PTT，
   WakeNet 在正式设备链路稳定后的独立版本重新接入。
 - `processing` 包含 ASR、Runtime 和 TTS 首包等待，UI 可以展示细分诊断但不增加业务状态。
-- speaking 时按 PTT：先停止本地播放并发送 `playback_cancel`，再开始新的话语；播放取消不取消
-  Runtime Run。
+- PTT 到达 Host 时立即介入：未发起 Runtime 请求的连续分段归入同一逻辑输入；已存在活动 Run 时，
+  取消该 Run 和剩余播报，再建立新的聚合轮次。
 - 审批不在终端处理，进入 `needs_attention` 并提示使用桌面端。
 - 任一错误必须能回到 `idle` 或 `disconnected`，不能永久停留在 `processing`。
 
 ## 10. 输入幂等与恢复
 
-- `client_input_id` 在一次输入开始时生成；未收到 `input_accepted` 前重连重试必须保持不变。
-- `input_accepted` 是 Host 已接受该输入的正式确认，重试不能换 ID，也不能重复朗读已确认结果。
+- `client_input_id` 在每个录音分段开始时生成；未收到 `input_segment_accepted` 前重连重试必须保持不变。
+- `input_segment_accepted` 只转移分段 PCM 所有权；`input_accepted` 是合并后的逻辑输入已被 Runtime 接受
+  的正式确认。两类确认必须使用独立消息。
 - Runtime 接受后，设备连接断开不取消 Run。
 - Gateway 重启后从 Runtime/Store 权威状态恢复设备身份与当前 Controller，不用媒体缓存重建 Conversation。
 - 终端重连只恢复设备状态和必要输出，不同步完整 Conversation。

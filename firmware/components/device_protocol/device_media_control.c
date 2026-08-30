@@ -322,6 +322,33 @@ device_media_control_decode_input_accepted(const device_control_envelope_t *enve
     return DEVICE_PROTOCOL_RESULT_OK;
 }
 
+device_protocol_result_t device_media_control_decode_input_segment_accepted(
+    const device_control_envelope_t *envelope,
+    device_media_input_segment_accepted_t *accepted)
+{
+    static const char *const fields[] = {"client_input_id", "stream_id"};
+    if (envelope == NULL || accepted == NULL ||
+        strcmp(device_control_envelope_message_type(envelope),
+               "input_segment_accepted") != 0) {
+        return DEVICE_PROTOCOL_RESULT_INVALID_ARGUMENT;
+    }
+    memset(accepted, 0, sizeof(*accepted));
+    const cJSON *payload = device_control_envelope_payload(envelope);
+    const cJSON *stream_id = cJSON_GetObjectItemCaseSensitive(payload, "stream_id");
+    if (!payload_has_exact_fields(payload, fields, sizeof(fields) / sizeof(fields[0])) ||
+        !copy_required_identifier(cJSON_GetObjectItemCaseSensitive(payload, "client_input_id"),
+                                  accepted->client_input_id,
+                                  DEVICE_CLIENT_INPUT_ID_MAX_BYTES) ||
+        !cJSON_IsNumber(stream_id) || stream_id->valuedouble < 1.0 ||
+        stream_id->valuedouble > (double)UINT32_MAX ||
+        stream_id->valuedouble != (double)(uint32_t)stream_id->valuedouble) {
+        memset(accepted, 0, sizeof(*accepted));
+        return DEVICE_PROTOCOL_RESULT_INVALID_ENVELOPE;
+    }
+    accepted->stream_id = (uint32_t)stream_id->valuedouble;
+    return DEVICE_PROTOCOL_RESULT_OK;
+}
+
 device_protocol_result_t
 device_media_control_decode_state_changed(const device_control_envelope_t *envelope,
                                           device_media_state_changed_t *state_changed)

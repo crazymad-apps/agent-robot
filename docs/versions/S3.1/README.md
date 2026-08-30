@@ -42,8 +42,8 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   不改变已有配对关系或长期身份。
 - S3.1 全版本以 PTT 为唯一 ASR 触发入口，不编译或运行 WakeNet；自动唤醒延后到正式设备链路稳定后的
   独立版本，不能掩盖网络或协议问题。
-- 整段话语在 PSRAM 保留到 `input_accepted`，断线后以同一 `client_input_id` 完整重传；确认接受后
-  立即释放，不缓存或重放完整 Conversation。
+- 每段话语在 PSRAM 保留到 `input_segment_accepted`，确认 Host 已接管后立即释放；Host 将 2 秒连续
+  输入窗口内、且尚未发起 Runtime 请求的多个分段按序合并为一次 `input_accepted`。
 - 密码学和 WSS 先设独立可行性门。未通过共享向量和实机 TLS pin 前，不展开 UI、ASR/TTS 或
   Agent 联调。
 

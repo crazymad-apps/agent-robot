@@ -45,7 +45,7 @@ typedef enum {
     VOICE_INPUT_EVENT_SEALED,
     VOICE_INPUT_EVENT_TRANSMISSION_STARTED,
     VOICE_INPUT_EVENT_AWAITING_ACCEPTANCE,
-    VOICE_INPUT_EVENT_ACCEPTED,
+    VOICE_INPUT_EVENT_SEGMENT_ACCEPTED,
     VOICE_INPUT_EVENT_CANCELLED,
     VOICE_INPUT_EVENT_EXPIRED,
     VOICE_INPUT_EVENT_TOO_LONG,
@@ -84,7 +84,7 @@ typedef struct {
     uint64_t frame_count;
     size_t queued_frame_count;
     uint32_t retransmission_count;
-    uint32_t accepted_input_count;
+    uint32_t accepted_segment_count;
     uint32_t rejected_input_count;
     uint32_t cancelled_input_count;
     uint32_t expired_input_count;
@@ -126,7 +126,13 @@ voice_input_result_t voice_input_connection_changed(
     bool online,
     uint64_t connection_epoch);
 
-voice_input_result_t voice_input_accept(
+voice_input_result_t voice_input_segment_accept(
+    voice_input_t *voice_input,
+    uint64_t connection_epoch,
+    const device_media_input_segment_accepted_t *accepted);
+
+/* Final Runtime acceptance also releases a matching cache if the segment ack was lost. */
+voice_input_result_t voice_input_final_accept(
     voice_input_t *voice_input,
     uint64_t connection_epoch,
     const device_media_input_accepted_t *accepted);

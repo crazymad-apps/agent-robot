@@ -126,6 +126,29 @@ static void verify_input_accepted(void)
     cJSON_Delete(payload);
 }
 
+static void verify_input_segment_accepted(void)
+{
+    cJSON *payload = cJSON_CreateObject();
+    assert(payload != NULL);
+    assert(cJSON_AddStringToObject(payload, "client_input_id", "client-segment") != NULL);
+    assert(cJSON_AddNumberToObject(payload, "stream_id", 17U) != NULL);
+    device_control_envelope_t *envelope =
+        envelope_from_payload("input_segment_accepted", payload);
+    device_media_input_segment_accepted_t accepted = {0};
+    assert(device_media_control_decode_input_segment_accepted(envelope, &accepted) ==
+           DEVICE_PROTOCOL_RESULT_OK);
+    assert(strcmp(accepted.client_input_id, "client-segment") == 0);
+    assert(accepted.stream_id == 17U);
+    device_control_envelope_release(envelope);
+
+    assert(cJSON_ReplaceItemInObject(payload, "stream_id", cJSON_CreateNumber(0U)));
+    envelope = envelope_from_payload("input_segment_accepted", payload);
+    assert(device_media_control_decode_input_segment_accepted(envelope, &accepted) ==
+           DEVICE_PROTOCOL_RESULT_INVALID_ENVELOPE);
+    device_control_envelope_release(envelope);
+    cJSON_Delete(payload);
+}
+
 static void verify_state_changed(void)
 {
     cJSON *payload = cJSON_CreateObject();
@@ -211,6 +234,7 @@ int main(void)
 {
     verify_listen_start();
     verify_simple_controls();
+    verify_input_segment_accepted();
     verify_input_accepted();
     verify_state_changed();
     verify_playback_events();

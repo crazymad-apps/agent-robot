@@ -368,9 +368,23 @@ static bool terminal_device_media_event(
             (unsigned long long)event->connection_epoch);
         return true;
     }
+    if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_INPUT_SEGMENT_ACCEPTED) {
+        if (terminal_voice_input == NULL ||
+            voice_input_segment_accept(
+                terminal_voice_input,
+                event->connection_epoch,
+                &event->value.input_segment_accepted) != VOICE_INPUT_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+            return false;
+        }
+        return true;
+    }
     if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED) {
         if (terminal_voice_input == NULL ||
-            voice_input_accept(
+            voice_input_final_accept(
                 terminal_voice_input,
                 event->connection_epoch,
                 &event->value.input_accepted) != VOICE_INPUT_RESULT_OK) {
@@ -401,6 +415,18 @@ static bool terminal_device_media_event(
             terminal_audio_io,
             event->connection_epoch,
             &event->value.playback_start);
+        if (result == AUDIO_IO_RESULT_BUSY &&
+            audio_io_playback_discard(
+                terminal_audio_io,
+                event->connection_epoch,
+                &event->value.playback_start) == AUDIO_IO_RESULT_OK) {
+            (void)device_connection_send_playback_cancel(
+                terminal_device_connection,
+                event->connection_epoch,
+                event->value.playback_start.output_id,
+                event->value.playback_start.stream_id);
+            return true;
+        }
     } else if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_PCM_FRAME) {
         result = audio_io_playback_push(
             terminal_audio_io,
@@ -738,7 +764,7 @@ static void terminal_voice_input_event_process(
     if (event->type == VOICE_INPUT_EVENT_SEALED ||
         event->type == VOICE_INPUT_EVENT_TRANSMISSION_STARTED ||
                event->type == VOICE_INPUT_EVENT_AWAITING_ACCEPTANCE ||
-               event->type == VOICE_INPUT_EVENT_ACCEPTED) {
+               event->type == VOICE_INPUT_EVENT_SEGMENT_ACCEPTED) {
         terminal_ui_project(
             terminal_device_online ? TERMINAL_UI_STATE_THINKING
                                    : TERMINAL_UI_STATE_CONNECTING,

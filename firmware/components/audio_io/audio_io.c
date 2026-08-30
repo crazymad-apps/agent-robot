@@ -933,6 +933,41 @@ audio_io_result_t audio_io_playback_begin(
     return result;
 }
 
+audio_io_result_t audio_io_playback_discard(
+    audio_io_t *audio_io,
+    uint64_t connection_epoch,
+    const device_media_playback_start_t *playback_start)
+{
+    if (audio_io == NULL || connection_epoch == 0U || playback_start == NULL ||
+        playback_start->stream_id == 0U ||
+        !identifier_is_terminated(playback_start->output_id,
+                                  sizeof(playback_start->output_id))) {
+        return AUDIO_IO_RESULT_INVALID_ARGUMENT;
+    }
+    if (xSemaphoreTake(audio_io->lock, AUDIO_IO_INGRESS_LOCK_WAIT_TICKS) != pdTRUE) {
+        return AUDIO_IO_RESULT_BUSY;
+    }
+    if (!audio_io->started ||
+        (!audio_io->capture_requested && !audio_io->capture_active &&
+         !audio_io->hardware_capturing)) {
+        xSemaphoreGive(audio_io->lock);
+        return AUDIO_IO_RESULT_INVALID_STATE;
+    }
+    if (audio_io->discarded_session_active &&
+        (audio_io->discarded_connection_epoch != connection_epoch ||
+         audio_io->discarded_stream_id != playback_start->stream_id)) {
+        xSemaphoreGive(audio_io->lock);
+        return AUDIO_IO_RESULT_BUSY;
+    }
+    audio_io->discarded_session_active = true;
+    audio_io->discarded_connection_epoch = connection_epoch;
+    audio_io->discarded_stream_id = playback_start->stream_id;
+    memcpy(audio_io->discarded_output_id, playback_start->output_id,
+           sizeof(audio_io->discarded_output_id));
+    xSemaphoreGive(audio_io->lock);
+    return AUDIO_IO_RESULT_OK;
+}
+
 audio_io_result_t audio_io_playback_push(
     audio_io_t *audio_io,
     uint64_t connection_epoch,

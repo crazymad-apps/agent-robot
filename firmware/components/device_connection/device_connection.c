@@ -1059,6 +1059,21 @@ static void online_control_handle(
             record_failure(connection, transport_failure(send_result), send_result);
             return;
         }
+    } else if (strcmp(message_type, "input_segment_accepted") == 0) {
+        device_connection_media_event_t event = {
+            .type = DEVICE_CONNECTION_MEDIA_EVENT_INPUT_SEGMENT_ACCEPTED,
+            .connection_epoch = connection->supervisor.connection_epoch,
+        };
+        if (device_media_control_decode_input_segment_accepted(
+                envelope,
+                &event.value.input_segment_accepted) != DEVICE_PROTOCOL_RESULT_OK ||
+            !emit_media_event(connection, &event)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
     } else if (strcmp(message_type, "input_accepted") == 0) {
         device_connection_media_event_t event = {
             .type = DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED,

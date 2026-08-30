@@ -34,6 +34,13 @@ static uint64_t monotonic_ms(void)
     return (uint64_t)esp_timer_get_time() / 1000U;
 }
 
+static TickType_t sample_period_ticks(void)
+{
+    const TickType_t ticks =
+        pdMS_TO_TICKS(TERMINAL_INTERACTION_SAMPLE_PERIOD_MS);
+    return ticks == 0U ? 1U : ticks;
+}
+
 static bool button_pressed(void)
 {
     return gpio_get_level(AGENT_ROBOT_BOARD_PTT_GPIO) == 0;
@@ -110,7 +117,7 @@ terminal_interaction_result_t terminal_interaction_evaluate_boot_action(
                     callback_context);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(TERMINAL_INTERACTION_SAMPLE_PERIOD_MS));
+        vTaskDelay(sample_period_ticks());
     }
 }
 
@@ -143,7 +150,7 @@ static void terminal_interaction_task(void *context)
             };
             callback(&event, callback_context);
         }
-        vTaskDelay(pdMS_TO_TICKS(TERMINAL_INTERACTION_SAMPLE_PERIOD_MS));
+        vTaskDelay(sample_period_ticks());
     }
     taskENTER_CRITICAL(&interaction->lock);
     interaction->started = false;

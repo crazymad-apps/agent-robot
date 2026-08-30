@@ -123,6 +123,7 @@ static void emit_event(
     if (connection->event_callback == NULL) {
         return;
     }
+    const device_connection_inputs_t inputs = input_snapshot(connection);
     device_connection_event_t event = {
         .type = type,
         .state = connection->supervisor.state,
@@ -132,6 +133,7 @@ static void emit_event(
         .transport_result = transport_result,
         .network_ip_epoch = connection->observed_ip_epoch,
         .connection_epoch = connection->supervisor.connection_epoch,
+        .paired = inputs.identity.paired,
         .pairing_state = connection->pairing == NULL
                              ? DEVICE_PAIRING_STATE_READY
                              : device_pairing_state(connection->pairing),
@@ -746,6 +748,7 @@ static void clear_credential_and_discover(device_connection_t *connection)
             WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
         return;
     }
+    bool pairing_code_changed = false;
     if (connection->pairing != NULL) {
         if (device_pairing_force_new_code(connection->pairing) !=
             DEVICE_PAIRING_RESULT_OK) {
@@ -756,7 +759,7 @@ static void clear_credential_and_discover(device_connection_t *connection)
             return;
         }
         connection->pairing_deadline_ms = 0U;
-        pairing_state_publish(connection, true);
+        pairing_code_changed = true;
     }
     const device_connection_identity_t unpaired_identity = {0};
     if (device_connection_update_identity(connection, &unpaired_identity) !=
@@ -765,6 +768,10 @@ static void clear_credential_and_discover(device_connection_t *connection)
             connection,
             DEVICE_CONNECTION_FAILURE_IDENTITY,
             WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    if (pairing_code_changed) {
+        pairing_state_publish(connection, true);
     }
 }
 

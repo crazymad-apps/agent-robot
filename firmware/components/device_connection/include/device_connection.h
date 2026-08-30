@@ -45,6 +45,7 @@ typedef struct {
     uint64_t network_ip_epoch;
     uint64_t connection_epoch;
     uint32_t reconnect_delay_ms;
+    bool paired;
     char installation_id_suffix[9U];
     char message_id[DEVICE_MESSAGE_ID_MAX_BYTES + 1U];
     char message_type[DEVICE_MESSAGE_TYPE_MAX_BYTES + 1U];

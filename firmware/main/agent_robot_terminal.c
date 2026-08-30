@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "network_connectivity.h"
 #include "nvs_flash.h"
+#include "terminal_ui.h"
 
 #define TERMINAL_EVENT_QUEUE_LENGTH 16U
 #define TERMINAL_LIFECYCLE_TASK_STACK_BYTES 4096U
@@ -36,12 +37,125 @@ static QueueHandle_t terminal_event_queue;
 static network_connectivity_t *terminal_network_connectivity;
 static device_connection_t *terminal_device_connection;
 static device_identity_t *terminal_device_identity;
+static terminal_ui_t *terminal_user_interface;
 static uint32_t terminal_event_drop_count;
 static uint32_t terminal_device_network_update_error_count;
+static uint32_t terminal_ui_update_error_count;
+static bool terminal_device_paired;
+static device_pairing_state_t terminal_pairing_state = DEVICE_PAIRING_STATE_READY;
 
 static void terminal_device_connection_network_changed(
     bool has_ip,
     uint64_t ip_epoch);
+
+static terminal_ui_state_t terminal_connection_ui_state(void)
+{
+    if (terminal_device_paired || terminal_pairing_state == DEVICE_PAIRING_STATE_COMPLETE) {
+        return TERMINAL_UI_STATE_CONNECTING;
+    }
+    if (terminal_pairing_state >= DEVICE_PAIRING_STATE_WAITING_FOR_APPROVAL &&
+        terminal_pairing_state < DEVICE_PAIRING_STATE_COMPLETE) {
+        return TERMINAL_UI_STATE_PAIRING;
+    }
+    return TERMINAL_UI_STATE_WAITING_FOR_PAIRING;
+}
+
+static void terminal_ui_project(
+    terminal_ui_state_t state,
+    terminal_ui_error_t error)
+{
+    if (terminal_user_interface == NULL) {
+        return;
+    }
+    terminal_ui_projection_t projection = {
+        .state = state,
+        .error = error,
+    };
+    if (!terminal_device_paired &&
+        state != TERMINAL_UI_STATE_STARTING &&
+        state != TERMINAL_UI_STATE_ERROR) {
+        projection.pairing_code_visible =
+            terminal_device_connection != NULL &&
+            device_connection_copy_pairing_code(
+                terminal_device_connection,
+                projection.pairing_code) == DEVICE_CONNECTION_RESULT_OK;
+    }
+    if (terminal_ui_update(terminal_user_interface, &projection) !=
+        TERMINAL_UI_RESULT_OK) {
+        (void)__atomic_fetch_add(
+            &terminal_ui_update_error_count,
+            1U,
+            __ATOMIC_RELAXED);
+    }
+}
+
+static terminal_ui_error_t terminal_connection_error(
+    const device_connection_event_t *event)
+{
+    if (event->selection_result == HOST_SELECTION_MULTIPLE_PAIRING_HOSTS) {
+        return TERMINAL_UI_ERROR_MULTIPLE_HOSTS;
+    }
+    if (event->failure == DEVICE_CONNECTION_FAILURE_CERTIFICATE ||
+        event->block_reason == DEVICE_CONNECTION_BLOCK_CERTIFICATE) {
+        return TERMINAL_UI_ERROR_CERTIFICATE;
+    }
+    if (event->failure == DEVICE_CONNECTION_FAILURE_IDENTITY ||
+        event->block_reason == DEVICE_CONNECTION_BLOCK_IDENTITY) {
+        return TERMINAL_UI_ERROR_IDENTITY;
+    }
+    if (event->failure == DEVICE_CONNECTION_FAILURE_PROTOCOL ||
+        event->block_reason == DEVICE_CONNECTION_BLOCK_PROTOCOL) {
+        return TERMINAL_UI_ERROR_PROTOCOL;
+    }
+    return TERMINAL_UI_ERROR_NONE;
+}
+
+static void terminal_device_connection_ui_project(
+    const device_connection_event_t *event)
+{
+    terminal_device_paired = event->paired;
+    terminal_pairing_state = event->pairing_state;
+    if (event->pairing_state == DEVICE_PAIRING_STATE_COMPLETE) {
+        terminal_ui_project(TERMINAL_UI_STATE_CONNECTING, TERMINAL_UI_ERROR_NONE);
+        return;
+    }
+    if (event->type == DEVICE_CONNECTION_EVENT_FAILURE) {
+        const terminal_ui_error_t error = terminal_connection_error(event);
+        if (error != TERMINAL_UI_ERROR_NONE) {
+            terminal_ui_project(TERMINAL_UI_STATE_ERROR, error);
+            return;
+        }
+    }
+    if (event->state == DEVICE_CONNECTION_STATE_ONLINE) {
+        terminal_ui_project(TERMINAL_UI_STATE_READY, TERMINAL_UI_ERROR_NONE);
+        return;
+    }
+    if (event->state == DEVICE_CONNECTION_STATE_BLOCKED) {
+        terminal_ui_project(
+            TERMINAL_UI_STATE_ERROR,
+            terminal_connection_error(event) == TERMINAL_UI_ERROR_NONE
+                ? TERMINAL_UI_ERROR_PROTOCOL
+                : terminal_connection_error(event));
+        return;
+    }
+    terminal_ui_project(terminal_connection_ui_state(), TERMINAL_UI_ERROR_NONE);
+}
+
+static void terminal_network_ui_project(
+    const network_connectivity_event_t *event)
+{
+    if (event->state == NETWORK_CONNECTIVITY_STATE_ERROR ||
+        event->state == NETWORK_CONNECTIVITY_STATE_UNCONFIGURED) {
+        terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_NETWORK);
+        return;
+    }
+    if (event->state != NETWORK_CONNECTIVITY_STATE_READY) {
+        terminal_ui_project(
+            terminal_device_paired ? TERMINAL_UI_STATE_CONNECTING
+                                   : terminal_connection_ui_state(),
+            TERMINAL_UI_ERROR_NONE);
+    }
+}
 
 static const char *network_state_name(network_connectivity_state_t state)
 {
@@ -121,6 +235,7 @@ static const char *device_connection_state_name(device_connection_state_t state)
 static void terminal_device_connection_event_process(
     const device_connection_event_t *event)
 {
+    terminal_device_connection_ui_project(event);
     if (event->type == DEVICE_CONNECTION_EVENT_HOST_SELECTED) {
         ESP_LOGI(
             TAG,
@@ -258,11 +373,22 @@ static void terminal_lifecycle_task(void *context)
                 "event=device_network_update_failed count=%lu",
                 (unsigned long)network_update_errors);
         }
+        const uint32_t ui_update_errors = __atomic_exchange_n(
+            &terminal_ui_update_error_count,
+            0U,
+            __ATOMIC_RELAXED);
+        if (ui_update_errors != 0U) {
+            ESP_LOGE(
+                TAG,
+                "event=terminal_ui_update_failed count=%lu",
+                (unsigned long)ui_update_errors);
+        }
         if (event.type == TERMINAL_EVENT_DEVICE_CONNECTION) {
             terminal_device_connection_event_process(&event.value.device_connection);
             continue;
         }
         const network_connectivity_event_t *network_event = &event.value.network;
+        terminal_network_ui_project(network_event);
         if (network_event->type == NETWORK_CONNECTIVITY_EVENT_IP_ACQUIRED) {
             esp_ip4_addr_t address = {.addr = network_event->ipv4_address};
             ESP_LOGI(
@@ -304,6 +430,15 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    ESP_ERROR_CHECK(
+        terminal_ui_create(&terminal_user_interface) == TERMINAL_UI_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+    ESP_ERROR_CHECK(
+        terminal_ui_start(terminal_user_interface) == TERMINAL_UI_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+
     terminal_event_queue = xQueueCreate(
         TERMINAL_EVENT_QUEUE_LENGTH,
         sizeof(terminal_event_t));
@@ -327,6 +462,7 @@ void app_main(void)
     device_connection_identity_t connection_identity = {0};
     const bool identity_loaded = terminal_identity_load(&connection_identity);
     if (identity_loaded) {
+        terminal_device_paired = connection_identity.paired;
         const device_connection_config_t device_connection_config = {
             .identity = connection_identity,
             .identity_store = terminal_device_identity,
@@ -355,6 +491,9 @@ void app_main(void)
             device_connection_start(terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
                 ? ESP_OK
                 : ESP_FAIL);
+        terminal_ui_project(terminal_connection_ui_state(), TERMINAL_UI_ERROR_NONE);
+    } else {
+        terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_IDENTITY);
     }
 
     const network_connectivity_config_t network_config = {

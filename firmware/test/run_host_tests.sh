@@ -158,6 +158,18 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -I"$FIRMWARE_DIR/components/audio_io/include" \
+    "$FIRMWARE_DIR/components/audio_io/audio_pcm_conversion.c" \
+    "$FIRMWARE_DIR/test/host/audio_pcm_conversion_test.c" \
+    -o "$BUILD_DIR/audio_pcm_conversion_test"
+
+"$BUILD_DIR/audio_pcm_conversion_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     -I"$FIRMWARE_DIR/components/device_protocol/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \

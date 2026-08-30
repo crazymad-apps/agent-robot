@@ -170,6 +170,19 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -I"$FIRMWARE_DIR/components/audio_io/private_include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    "$FIRMWARE_DIR/components/audio_io/audio_playback_ring.c" \
+    "$FIRMWARE_DIR/test/host/audio_playback_ring_test.c" \
+    -o "$BUILD_DIR/audio_playback_ring_test"
+
+"$BUILD_DIR/audio_playback_ring_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     -I"$FIRMWARE_DIR/components/device_protocol/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \

@@ -6,6 +6,7 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_system.h"
@@ -22,6 +23,11 @@
 #define TERMINAL_EVENT_QUEUE_LENGTH 32U
 #define TERMINAL_LIFECYCLE_TASK_STACK_BYTES 4096U
 #define TERMINAL_LIFECYCLE_TASK_PRIORITY 5U
+#define TERMINAL_RESOURCE_MONITOR_TASK_STACK_BYTES 4096U
+#define TERMINAL_RESOURCE_MONITOR_TASK_PRIORITY 1U
+#define TERMINAL_RESOURCE_MONITOR_INITIAL_DELAY_MS 10000U
+#define TERMINAL_RESOURCE_MONITOR_INTERVAL_MS 30000U
+#define TERMINAL_RESOURCE_MONITOR_MAX_TASKS 32U
 
 static const char *const TAG = "terminal_lifecycle";
 typedef enum {
@@ -81,6 +87,15 @@ static bool terminal_device_online;
 static uint64_t terminal_online_connection_epoch;
 static uint64_t terminal_capture_session_id;
 static device_pairing_state_t terminal_pairing_state = DEVICE_PAIRING_STATE_READY;
+
+static const char *const terminal_observed_task_names[] = {
+    "terminal_lifecycle",
+    "device_connection",
+    "audio_io",
+    "voice_input",
+    "terminal_ui",
+    "terminal_button",
+};
 
 static void terminal_device_connection_network_changed(
     bool has_ip,
@@ -782,6 +797,70 @@ static void terminal_secure_zero(void *memory, size_t memory_size)
     }
 }
 
+static bool terminal_task_is_observed(const char *task_name)
+{
+    for (size_t index = 0U;
+         index < sizeof(terminal_observed_task_names) /
+                     sizeof(terminal_observed_task_names[0]);
+         ++index) {
+        if (strncmp(
+                task_name,
+                terminal_observed_task_names[index],
+                configMAX_TASK_NAME_LEN - 1U) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void terminal_resource_snapshot_log(void)
+{
+    const uint32_t internal_capabilities = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const uint32_t external_capabilities = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    ESP_LOGI(
+        TAG,
+        "event=runtime_resource_snapshot internal_free_bytes=%lu "
+        "internal_minimum_free_bytes=%lu internal_largest_block_bytes=%lu "
+        "psram_free_bytes=%lu psram_minimum_free_bytes=%lu "
+        "psram_largest_block_bytes=%lu",
+        (unsigned long)heap_caps_get_free_size(internal_capabilities),
+        (unsigned long)heap_caps_get_minimum_free_size(internal_capabilities),
+        (unsigned long)heap_caps_get_largest_free_block(internal_capabilities),
+        (unsigned long)heap_caps_get_free_size(external_capabilities),
+        (unsigned long)heap_caps_get_minimum_free_size(external_capabilities),
+        (unsigned long)heap_caps_get_largest_free_block(external_capabilities));
+
+    TaskStatus_t task_statuses[TERMINAL_RESOURCE_MONITOR_MAX_TASKS];
+    const UBaseType_t task_count = uxTaskGetSystemState(
+        task_statuses,
+        TERMINAL_RESOURCE_MONITOR_MAX_TASKS,
+        NULL);
+    if (task_count == 0U) {
+        ESP_LOGW(TAG, "event=runtime_task_stack_snapshot status=unavailable");
+        return;
+    }
+    for (UBaseType_t index = 0U; index < task_count; ++index) {
+        if (!terminal_task_is_observed(task_statuses[index].pcTaskName)) {
+            continue;
+        }
+        ESP_LOGI(
+            TAG,
+            "event=runtime_task_stack_snapshot task=%s minimum_free_bytes=%lu",
+            task_statuses[index].pcTaskName,
+            (unsigned long)task_statuses[index].usStackHighWaterMark);
+    }
+}
+
+static void terminal_resource_monitor_task(void *context)
+{
+    (void)context;
+    vTaskDelay(pdMS_TO_TICKS(TERMINAL_RESOURCE_MONITOR_INITIAL_DELAY_MS));
+    while (true) {
+        terminal_resource_snapshot_log();
+        vTaskDelay(pdMS_TO_TICKS(TERMINAL_RESOURCE_MONITOR_INTERVAL_MS));
+    }
+}
+
 static bool terminal_identity_load(
     device_connection_identity_t *connection_identity)
 {
@@ -1036,6 +1115,17 @@ void app_main(void)
             TERMINAL_LIFECYCLE_TASK_STACK_BYTES,
             terminal_event_queue,
             TERMINAL_LIFECYCLE_TASK_PRIORITY,
+            NULL)
+                == pdPASS
+            ? ESP_OK
+            : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(
+        xTaskCreate(
+            terminal_resource_monitor_task,
+            "terminal_resources",
+            TERMINAL_RESOURCE_MONITOR_TASK_STACK_BYTES,
+            NULL,
+            TERMINAL_RESOURCE_MONITOR_TASK_PRIORITY,
             NULL)
                 == pdPASS
             ? ESP_OK

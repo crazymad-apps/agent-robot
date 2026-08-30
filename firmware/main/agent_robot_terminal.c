@@ -45,6 +45,7 @@ typedef struct {
     uint32_t stream_id;
     uint64_t capture_session_id;
     uint64_t capture_sample_count;
+    uint32_t playback_rebuffer_count;
 } terminal_audio_io_event_t;
 
 typedef struct {
@@ -71,6 +72,7 @@ static uint32_t terminal_event_drop_count;
 static uint32_t terminal_device_network_update_error_count;
 static uint32_t terminal_ui_update_error_count;
 static uint32_t terminal_audio_ingress_error_count;
+static uint32_t terminal_audio_ingress_last_result;
 static uint32_t terminal_audio_cancel_error_count;
 static uint32_t terminal_voice_input_error_count;
 static uint32_t terminal_interaction_error_count;
@@ -260,6 +262,7 @@ static void terminal_audio_io_event(
             .stream_id = event->stream_id,
             .capture_session_id = event->capture_session_id,
             .capture_sample_count = event->capture_sample_count,
+            .playback_rebuffer_count = event->playback_rebuffer_count,
         },
     };
     if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
@@ -315,6 +318,19 @@ static bool terminal_device_media_event(
     void *context)
 {
     if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_STATE_CHANGED) {
+        if (event->value.state_changed.state == DEVICE_MEDIA_INTERACTION_STATE_IDLE &&
+            event->value.state_changed.has_client_input_id &&
+            terminal_voice_input != NULL &&
+            voice_input_reject(
+                terminal_voice_input,
+                event->connection_epoch,
+                event->value.state_changed.client_input_id) != VOICE_INPUT_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+            return false;
+        }
         QueueHandle_t event_queue = context;
         const terminal_event_t terminal_event = {
             .type = TERMINAL_EVENT_DEVICE_MEDIA_STATE,
@@ -326,6 +342,15 @@ static bool terminal_device_media_event(
         if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
             (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
         }
+        return true;
+    }
+    if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_REMOTE_ERROR) {
+        ESP_LOGI(
+            TAG,
+            "event=device_remote_error code=%s recoverable=%u connection_epoch=%llu",
+            event->value.remote_error.code,
+            event->value.remote_error.recoverable ? 1U : 0U,
+            (unsigned long long)event->connection_epoch);
         return true;
     }
     if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED) {
@@ -373,6 +398,10 @@ static bool terminal_device_media_event(
             &event->value.playback_end);
     }
     if (result != AUDIO_IO_RESULT_OK) {
+        __atomic_store_n(
+            &terminal_audio_ingress_last_result,
+            (uint32_t)result,
+            __ATOMIC_RELAXED);
         (void)__atomic_fetch_add(&terminal_audio_ingress_error_count, 1U, __ATOMIC_RELAXED);
         return false;
     }
@@ -544,10 +573,12 @@ static void terminal_audio_io_event_process(
         }
         ESP_LOGI(
             TAG,
-            "event=audio_playback type=%u result=%u stream_id=%lu connection_epoch=%llu",
+            "event=audio_playback type=%u result=%u stream_id=%lu rebuffer_count=%lu "
+            "connection_epoch=%llu",
             (unsigned int)event->type,
             (unsigned int)event->result,
             (unsigned long)event->stream_id,
+            (unsigned long)event->playback_rebuffer_count,
             (unsigned long long)event->connection_epoch);
         return;
     }
@@ -697,7 +728,8 @@ static void terminal_voice_input_event_process(
             terminal_device_online ? TERMINAL_UI_STATE_THINKING
                                    : TERMINAL_UI_STATE_CONNECTING,
             TERMINAL_UI_ERROR_NONE);
-    } else if (event->type == VOICE_INPUT_EVENT_CANCELLED) {
+    } else if (event->type == VOICE_INPUT_EVENT_REJECTED ||
+               event->type == VOICE_INPUT_EVENT_CANCELLED) {
         terminal_ui_project(
             terminal_device_online ? TERMINAL_UI_STATE_READY
                                    : TERMINAL_UI_STATE_CONNECTING,
@@ -832,10 +864,15 @@ static void terminal_lifecycle_task(void *context)
             0U,
             __ATOMIC_RELAXED);
         if (audio_ingress_errors != 0U) {
+            const uint32_t last_result = __atomic_exchange_n(
+                &terminal_audio_ingress_last_result,
+                (uint32_t)AUDIO_IO_RESULT_OK,
+                __ATOMIC_RELAXED);
             ESP_LOGE(
                 TAG,
-                "event=audio_ingress_failed count=%lu",
-                (unsigned long)audio_ingress_errors);
+                "event=audio_ingress_failed count=%lu last_result=%lu",
+                (unsigned long)audio_ingress_errors,
+                (unsigned long)last_result);
         }
         const uint32_t audio_cancel_errors = __atomic_exchange_n(
             &terminal_audio_cancel_error_count,

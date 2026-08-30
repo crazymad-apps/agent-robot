@@ -192,7 +192,7 @@ Drivers / BSP
 - 驱动不直接发送协议消息，网络层不直接操作硬件。
 - Network Connectivity Service 是 Wi-Fi Station、NVS 凭据、IP epoch 和 Wi-Fi 退避的唯一所有者；
   Device Connection Supervisor 只消费 IP 可用性事件，不直接调用 Wi-Fi connect。
-- 状态变更通过有界事件队列传递，音频数据使用预分配 ring buffer。
+- 状态变更通过有界事件队列传递，音频数据使用预分配的有界环形 FIFO。
 - UI 只展示 Controller 提供的投影，不推断网络或 Runtime 状态。
 
 ## 7. 终端任务与数据流
@@ -203,7 +203,7 @@ Drivers / BSP
 |---|---|---|
 | Audio Capture | I2S RX、格式转换、写入上行 ring buffer | 不等待网络 |
 | Wake Word | 消费连续 PCM、运行 AFE/WakeNet、产生本地唤醒事件 | 不直接提交 Runtime；播放时可暂停 |
-| Audio Playback | 从下行 ring buffer 读取并写 I2S TX | 不等待 UI |
+| Audio Playback | 从统一下行 PCM FIFO 读取并写 I2S TX | 不等待 UI |
 | Network | 连接、控制消息、音频帧收发 | 不执行耗时音频转换 |
 | Controller | PTT、状态机、超时和取消协调 | 单一状态写入者 |
 | UI | LVGL tick、渲染和动画 | 低于音频关键路径优先级 |
@@ -214,7 +214,7 @@ Drivers / BSP
 ```text
 I2S RX → Capture Ring ─┬→ WakeNet → Controller
                        └→ Network TX
-Network RX → Playback Ring → I2S TX
+Network RX → Playback PCM FIFO → I2S TX
 Buttons / Wake / Network Events → Controller → UI Projection
 ```
 

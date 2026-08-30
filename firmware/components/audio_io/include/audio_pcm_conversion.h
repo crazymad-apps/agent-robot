@@ -8,7 +8,6 @@ extern "C" {
 #endif
 
 #define AUDIO_PCM_I2S_WORDS_PER_FRAME 2U
-#define AUDIO_PCM_DEFAULT_PLAYBACK_GAIN_PERCENT 75U
 
 typedef enum {
     AUDIO_PCM_CONVERSION_RESULT_OK = 0,

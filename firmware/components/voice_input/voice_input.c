@@ -40,6 +40,7 @@ typedef enum {
     VOICE_INPUT_CONTROL_CANCEL,
     VOICE_INPUT_CONTROL_CONNECTION_CHANGED,
     VOICE_INPUT_CONTROL_ACCEPTED,
+    VOICE_INPUT_CONTROL_REJECTED,
 } voice_input_control_type_t;
 
 typedef struct {
@@ -71,6 +72,10 @@ typedef struct {
             uint64_t connection_epoch;
             device_media_input_accepted_t accepted;
         } accepted;
+        struct {
+            uint64_t connection_epoch;
+            char client_input_id[DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U];
+        } rejected;
     } value;
 } voice_input_control_t;
 
@@ -610,6 +615,23 @@ static void accepted_process(
     input_clear(voice_input, VOICE_INPUT_STATE_IDLE);
 }
 
+static void rejected_process(
+    voice_input_t *voice_input,
+    const voice_input_control_t *control)
+{
+    if (control->value.rejected.connection_epoch != voice_input->connection_epoch ||
+        utterance_cache_state(voice_input->cache) != UTTERANCE_CACHE_STATE_SEALED ||
+        strcmp(control->value.rejected.client_input_id,
+               voice_input->client_input_id) != 0) {
+        return;
+    }
+    taskENTER_CRITICAL(&voice_input->status_lock);
+    ++voice_input->status.rejected_input_count;
+    taskEXIT_CRITICAL(&voice_input->status_lock);
+    emit_event(voice_input, VOICE_INPUT_EVENT_REJECTED, VOICE_INPUT_RESULT_OK);
+    input_clear(voice_input, VOICE_INPUT_STATE_IDLE);
+}
+
 static void control_process(
     voice_input_t *voice_input,
     const voice_input_control_t *control)
@@ -644,6 +666,9 @@ static void control_process(
             break;
         case VOICE_INPUT_CONTROL_ACCEPTED:
             accepted_process(voice_input, control);
+            break;
+        case VOICE_INPUT_CONTROL_REJECTED:
+            rejected_process(voice_input, control);
             break;
         default:
             break;
@@ -998,6 +1023,25 @@ voice_input_result_t voice_input_accept(
             .accepted = *accepted,
         },
     };
+    return control_enqueue(voice_input, &control);
+}
+
+voice_input_result_t voice_input_reject(
+    voice_input_t *voice_input,
+    uint64_t connection_epoch,
+    const char *client_input_id)
+{
+    if (voice_input == NULL || connection_epoch == 0U ||
+        client_input_id == NULL || client_input_id[0] == '\0' ||
+        memchr(client_input_id, '\0', DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U) == NULL) {
+        return VOICE_INPUT_RESULT_INVALID_ARGUMENT;
+    }
+    voice_input_control_t control = {
+        .type = VOICE_INPUT_CONTROL_REJECTED,
+        .value.rejected.connection_epoch = connection_epoch,
+    };
+    memcpy(control.value.rejected.client_input_id, client_input_id,
+           sizeof(control.value.rejected.client_input_id));
     return control_enqueue(voice_input, &control);
 }
 

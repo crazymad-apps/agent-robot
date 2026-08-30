@@ -50,6 +50,7 @@ typedef enum {
     VOICE_INPUT_EVENT_EXPIRED,
     VOICE_INPUT_EVENT_TOO_LONG,
     VOICE_INPUT_EVENT_FAILED,
+    VOICE_INPUT_EVENT_REJECTED,
 } voice_input_event_type_t;
 
 typedef struct {
@@ -84,6 +85,7 @@ typedef struct {
     size_t queued_frame_count;
     uint32_t retransmission_count;
     uint32_t accepted_input_count;
+    uint32_t rejected_input_count;
     uint32_t cancelled_input_count;
     uint32_t expired_input_count;
     uint32_t failed_input_count;
@@ -128,6 +130,12 @@ voice_input_result_t voice_input_accept(
     voice_input_t *voice_input,
     uint64_t connection_epoch,
     const device_media_input_accepted_t *accepted);
+
+/* Releases a sealed input when Host returns it to idle without accepting it. */
+voice_input_result_t voice_input_reject(
+    voice_input_t *voice_input,
+    uint64_t connection_epoch,
+    const char *client_input_id);
 
 void voice_input_get_status(
     voice_input_t *voice_input,

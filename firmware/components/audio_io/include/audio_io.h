@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define AUDIO_IO_DEFAULT_PLAYBACK_GAIN_PERCENT 75U
+#define AUDIO_IO_DEFAULT_PLAYBACK_GAIN_PERCENT 30U
 #define AUDIO_IO_CAPTURE_SAMPLE_RATE_HZ 16000U
 #define AUDIO_IO_CAPTURE_FRAME_DURATION_MS 20U
 #define AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME \
@@ -67,6 +67,7 @@ typedef struct {
     char output_id[DEVICE_MEDIA_OUTPUT_ID_MAX_BYTES + 1U];
     uint64_t capture_session_id;
     uint64_t capture_sample_count;
+    uint32_t playback_rebuffer_count;
 } audio_io_event_t;
 
 /* Events run synchronously on the Audio task and the callback must not block. */
@@ -100,6 +101,7 @@ typedef struct {
     uint32_t completed_playback_count;
     uint32_t cancelled_playback_count;
     uint32_t failed_playback_count;
+    uint32_t playback_rebuffer_count;
     audio_io_capture_state_t capture_state;
     uint64_t capture_session_id;
     uint64_t capture_sample_count;

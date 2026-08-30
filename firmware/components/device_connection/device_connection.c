@@ -1181,12 +1181,18 @@ static void online_pcm_handle(
             connection->receive_payload,
             payload_length,
             DEVICE_PCM_DIRECTION_DOWNLINK,
-            &event.value.pcm_frame) != DEVICE_PROTOCOL_RESULT_OK ||
-        !emit_media_event(connection, &event)) {
+            &event.value.pcm_frame) != DEVICE_PROTOCOL_RESULT_OK) {
         record_failure(
             connection,
             DEVICE_CONNECTION_FAILURE_PROTOCOL,
             WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    if (!emit_media_event(connection, &event)) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_TRANSIENT,
+            WSS_TRANSPORT_RESULT_CAPACITY_EXCEEDED);
         return;
     }
     taskENTER_CRITICAL(&connection->input_lock);

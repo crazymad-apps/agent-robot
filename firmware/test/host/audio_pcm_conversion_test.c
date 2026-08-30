@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <stdio.h>
 
+#define TEST_PLAYBACK_GAIN_PERCENT 75U
+
 static void verify_capture_conversion(void)
 {
     const int32_t i2s_words[] = {INT32_C(0x7FFF0000),           INT32_C(0x11110000),
@@ -33,7 +35,7 @@ static void verify_playback_conversion(void)
     int32_t i2s_words[10] = {0};
     size_t i2s_word_count = 0U;
     assert(audio_pcm_playback_convert(pcm_samples, sizeof(pcm_samples) / sizeof(pcm_samples[0]),
-                                      AUDIO_PCM_DEFAULT_PLAYBACK_GAIN_PERCENT, i2s_words,
+                                      TEST_PLAYBACK_GAIN_PERCENT, i2s_words,
                                       sizeof(i2s_words) / sizeof(i2s_words[0]),
                                       &i2s_word_count) == AUDIO_PCM_CONVERSION_RESULT_OK);
     assert(i2s_word_count == 10U);
@@ -49,7 +51,7 @@ static void verify_playback_conversion(void)
                                       &i2s_word_count) ==
            AUDIO_PCM_CONVERSION_RESULT_INVALID_ARGUMENT);
     assert(audio_pcm_playback_convert(pcm_samples, sizeof(pcm_samples) / sizeof(pcm_samples[0]),
-                                      AUDIO_PCM_DEFAULT_PLAYBACK_GAIN_PERCENT, i2s_words, 9U,
+                                      TEST_PLAYBACK_GAIN_PERCENT, i2s_words, 9U,
                                       &i2s_word_count) ==
            AUDIO_PCM_CONVERSION_RESULT_OUTPUT_TOO_SMALL);
     assert(i2s_word_count == 10U);

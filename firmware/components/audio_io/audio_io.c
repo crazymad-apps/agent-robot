@@ -5,7 +5,7 @@
 
 #include "audio_hardware.h"
 #include "audio_pcm_conversion.h"
-#include "audio_playback_ring.h"
+#include "audio_playback_queue.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -17,20 +17,27 @@
 #define AUDIO_IO_PLAYBACK_WRITE_TIMEOUT_MS 100U
 #define AUDIO_IO_CAPTURE_READ_TIMEOUT_MS 100U
 #define AUDIO_IO_PLAYBACK_PRELOAD_DURATION_US 20000U
+#define AUDIO_IO_PLAYBACK_INITIAL_BUFFER_FRAMES 100U
+#define AUDIO_IO_PLAYBACK_RECOVERY_BUFFER_FRAMES 100U
 #define AUDIO_IO_STOPPED_BIT BIT0
 #define AUDIO_IO_INGRESS_LOCK_WAIT_TICKS 1U
 
 _Static_assert(
-    AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME == AUDIO_PLAYBACK_RING_SAMPLES_PER_FRAME,
+    AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME == AUDIO_PLAYBACK_QUEUE_SAMPLES_PER_FRAME,
     "capture and playback must use the protocol PCM frame size");
+_Static_assert(
+    AUDIO_IO_PLAYBACK_INITIAL_BUFFER_FRAMES <= AUDIO_PLAYBACK_QUEUE_FRAME_CAPACITY,
+    "initial playback buffer must fit in the playback queue");
+_Static_assert(
+    AUDIO_IO_PLAYBACK_RECOVERY_BUFFER_FRAMES <= AUDIO_PLAYBACK_QUEUE_FRAME_CAPACITY,
+    "recovery playback buffer must fit in the playback queue");
 
 struct audio_io {
     SemaphoreHandle_t lock;
     EventGroupHandle_t lifecycle_events;
     TaskHandle_t task;
     audio_hardware_t *hardware;
-    audio_playback_ring_t *playback_ring;
-    audio_playback_ring_t *pending_playback_ring;
+    audio_playback_queue_t *playback_queue;
     audio_io_event_callback_t event_callback;
     void *event_context;
     audio_io_capture_frame_callback_t capture_frame_callback;
@@ -40,13 +47,11 @@ struct audio_io {
     bool stop_requested;
     bool playback_active;
     bool hardware_playing;
+    bool playback_started;
+    bool playback_rebuffering;
     uint64_t playback_generation;
-    int64_t playback_deadline_us;
+    int64_t playback_buffered_until_us;
     char output_id[DEVICE_MEDIA_OUTPUT_ID_MAX_BYTES + 1U];
-    bool pending_playback_active;
-    uint64_t pending_connection_epoch;
-    uint32_t pending_stream_id;
-    char pending_output_id[DEVICE_MEDIA_OUTPUT_ID_MAX_BYTES + 1U];
     bool cancellation_pending;
     audio_io_event_t cancellation_event;
     bool discarded_session_active;
@@ -86,6 +91,7 @@ static void copy_active_event(
         .result = result,
         .connection_epoch = audio_io->status.connection_epoch,
         .stream_id = audio_io->status.stream_id,
+        .playback_rebuffer_count = audio_io->status.playback_rebuffer_count,
     };
     memcpy(event->output_id, audio_io->output_id, sizeof(event->output_id));
 }
@@ -104,41 +110,43 @@ static void copy_capture_event(
     };
 }
 
-static audio_io_result_t ring_result(audio_playback_ring_result_t result)
+static audio_io_result_t queue_result(audio_playback_queue_result_t result)
 {
     switch (result) {
-    case AUDIO_PLAYBACK_RING_RESULT_OK:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_OK:
         return AUDIO_IO_RESULT_OK;
-    case AUDIO_PLAYBACK_RING_RESULT_INVALID_ARGUMENT:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_INVALID_ARGUMENT:
         return AUDIO_IO_RESULT_INVALID_ARGUMENT;
-    case AUDIO_PLAYBACK_RING_RESULT_NO_MEMORY:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_NO_MEMORY:
         return AUDIO_IO_RESULT_NO_MEMORY;
-    case AUDIO_PLAYBACK_RING_RESULT_INVALID_STATE:
-    case AUDIO_PLAYBACK_RING_RESULT_EMPTY:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_INVALID_STATE:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_EMPTY:
         return AUDIO_IO_RESULT_INVALID_STATE;
-    case AUDIO_PLAYBACK_RING_RESULT_STREAM_MISMATCH:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_STREAM_MISMATCH:
         return AUDIO_IO_RESULT_SESSION_MISMATCH;
-    case AUDIO_PLAYBACK_RING_RESULT_SEQUENCE_MISMATCH:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_SEQUENCE_MISMATCH:
         return AUDIO_IO_RESULT_SEQUENCE_MISMATCH;
-    case AUDIO_PLAYBACK_RING_RESULT_OVERFLOW:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_FRAME_CAPACITY_EXCEEDED:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_STREAM_CAPACITY_EXCEEDED:
         return AUDIO_IO_RESULT_BUFFER_OVERFLOW;
-    case AUDIO_PLAYBACK_RING_RESULT_SAMPLE_COUNT_EXCEEDED:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_SAMPLE_COUNT_EXCEEDED:
         return AUDIO_IO_RESULT_SAMPLE_COUNT_EXCEEDED;
-    case AUDIO_PLAYBACK_RING_RESULT_INCOMPLETE:
+    case AUDIO_PLAYBACK_QUEUE_RESULT_INCOMPLETE:
         return AUDIO_IO_RESULT_INCOMPLETE;
     default:
         return AUDIO_IO_RESULT_INVALID_STATE;
     }
 }
 
-static void update_ring_status(audio_io_t *audio_io);
+static void update_playback_status(audio_io_t *audio_io);
 
-static void clear_active_playback(audio_io_t *audio_io)
+static void reset_active_playback(audio_io_t *audio_io)
 {
-    audio_playback_ring_clear(audio_io->playback_ring);
     audio_io->playback_active = false;
+    audio_io->playback_started = false;
+    audio_io->playback_rebuffering = false;
     ++audio_io->playback_generation;
-    audio_io->playback_deadline_us = 0;
+    audio_io->playback_buffered_until_us = 0;
     memset(audio_io->output_id, 0, sizeof(audio_io->output_id));
     audio_io->status.playback_state = audio_io->started ? AUDIO_IO_PLAYBACK_STATE_IDLE
                                                        : AUDIO_IO_PLAYBACK_STATE_STOPPED;
@@ -149,16 +157,14 @@ static void clear_active_playback(audio_io_t *audio_io)
     audio_io->status.received_frame_count = 0U;
     audio_io->status.consumed_sample_count = 0U;
     audio_io->status.queued_frame_count = 0U;
+    audio_io->status.queued_playback_count = 0U;
+    audio_io->status.playback_rebuffer_count = 0U;
 }
 
-static void clear_pending_playback(audio_io_t *audio_io)
+static void clear_playback_queue(audio_io_t *audio_io)
 {
-    audio_playback_ring_clear(audio_io->pending_playback_ring);
-    audio_io->pending_playback_active = false;
-    audio_io->pending_connection_epoch = 0U;
-    audio_io->pending_stream_id = 0U;
-    memset(audio_io->pending_output_id, 0, sizeof(audio_io->pending_output_id));
-    audio_io->status.queued_playback_count = 0U;
+    audio_playback_queue_clear(audio_io->playback_queue);
+    reset_active_playback(audio_io);
 }
 
 static void clear_capture(audio_io_t *audio_io)
@@ -175,26 +181,22 @@ static void clear_capture(audio_io_t *audio_io)
     audio_io->status.capture_frame_count = 0U;
 }
 
-static bool promote_pending_playback(audio_io_t *audio_io)
+static bool activate_playback_head(audio_io_t *audio_io)
 {
-    if (!audio_io->pending_playback_active) {
+    audio_playback_queue_status_t queue_status = {0};
+    audio_playback_queue_get_status(audio_io->playback_queue, &queue_status);
+    if (queue_status.stream_count == 0U) {
         return false;
     }
-    audio_playback_ring_t *completed_ring = audio_io->playback_ring;
-    audio_io->playback_ring = audio_io->pending_playback_ring;
-    audio_io->pending_playback_ring = completed_ring;
     audio_io->playback_active = true;
+    audio_io->playback_started = false;
+    audio_io->playback_rebuffering = false;
     ++audio_io->playback_generation;
-    memcpy(audio_io->output_id, audio_io->pending_output_id, sizeof(audio_io->output_id));
-    memcpy(audio_io->status.output_id, audio_io->pending_output_id,
-           sizeof(audio_io->status.output_id));
+    audio_io->playback_buffered_until_us = 0;
+    memcpy(audio_io->output_id, queue_status.output_id, sizeof(audio_io->output_id));
     audio_io->status.playback_state = AUDIO_IO_PLAYBACK_STATE_BUFFERING;
-    audio_io->pending_playback_active = false;
-    audio_io->pending_connection_epoch = 0U;
-    audio_io->pending_stream_id = 0U;
-    memset(audio_io->pending_output_id, 0, sizeof(audio_io->pending_output_id));
-    audio_io->status.queued_playback_count = 0U;
-    update_ring_status(audio_io);
+    audio_io->status.playback_rebuffer_count = 0U;
+    update_playback_status(audio_io);
     return true;
 }
 
@@ -205,25 +207,30 @@ static uint64_t sample_duration_us(uint64_t sample_count)
     return seconds * 1000000U + (remaining_samples * 1000000U) / 16000U;
 }
 
-static int64_t playback_deadline_us(uint64_t sample_count)
+static int64_t playback_buffered_until_us(uint64_t buffered_duration_us)
 {
-    const uint64_t duration_us = sample_duration_us(sample_count);
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
-    const uint64_t deadline_us =
-        now_us + AUDIO_IO_PLAYBACK_PRELOAD_DURATION_US + duration_us;
-    return deadline_us > INT64_MAX ? INT64_MAX : (int64_t)deadline_us;
+    const uint64_t buffered_until_us =
+        buffered_duration_us > UINT64_MAX - now_us
+            ? UINT64_MAX
+            : now_us + buffered_duration_us;
+    return buffered_until_us > INT64_MAX ? INT64_MAX : (int64_t)buffered_until_us;
 }
 
-static void update_ring_status(audio_io_t *audio_io)
+static void update_playback_status(audio_io_t *audio_io)
 {
-    audio_playback_ring_status_t ring_status = {0};
-    audio_playback_ring_get_status(audio_io->playback_ring, &ring_status);
-    audio_io->status.connection_epoch = ring_status.connection_epoch;
-    audio_io->status.stream_id = ring_status.stream_id;
-    audio_io->status.sample_count = ring_status.sample_count;
-    audio_io->status.received_frame_count = ring_status.received_frame_count;
-    audio_io->status.consumed_sample_count = ring_status.consumed_sample_count;
-    audio_io->status.queued_frame_count = ring_status.queued_frame_count;
+    audio_playback_queue_status_t queue_status = {0};
+    audio_playback_queue_get_status(audio_io->playback_queue, &queue_status);
+    audio_io->status.connection_epoch = queue_status.connection_epoch;
+    audio_io->status.stream_id = queue_status.stream_id;
+    memcpy(audio_io->status.output_id, queue_status.output_id,
+           sizeof(audio_io->status.output_id));
+    audio_io->status.sample_count = queue_status.sample_count;
+    audio_io->status.received_frame_count = queue_status.received_frame_count;
+    audio_io->status.consumed_sample_count = queue_status.consumed_sample_count;
+    audio_io->status.queued_frame_count = queue_status.queued_frame_count;
+    audio_io->status.queued_playback_count =
+        queue_status.stream_count == 0U ? 0U : queue_status.stream_count - 1U;
 }
 
 static void record_event_count(audio_io_t *audio_io, audio_io_event_type_t type)
@@ -266,11 +273,20 @@ static void playback_finish(
             result = AUDIO_IO_RESULT_HARDWARE_FAILURE;
         }
         copy_active_event(audio_io, type, result, &event);
-        clear_active_playback(audio_io);
         if (type == AUDIO_IO_EVENT_PLAYBACK_COMPLETED) {
-            (void)promote_pending_playback(audio_io);
+            const audio_playback_queue_result_t complete_result =
+                audio_playback_queue_complete_head(audio_io->playback_queue);
+            reset_active_playback(audio_io);
+            if (complete_result == AUDIO_PLAYBACK_QUEUE_RESULT_OK) {
+                (void)activate_playback_head(audio_io);
+            } else {
+                type = AUDIO_IO_EVENT_PLAYBACK_FAILED;
+                event.type = type;
+                event.result = queue_result(complete_result);
+                clear_playback_queue(audio_io);
+            }
         } else {
-            clear_pending_playback(audio_io);
+            clear_playback_queue(audio_io);
         }
         record_event_count(audio_io, type);
         event_ready = true;
@@ -482,7 +498,13 @@ static void audio_io_task(void *context)
         }
         const uint64_t generation = audio_io->playback_generation;
         if (!audio_io->hardware_playing) {
-            if (!audio_playback_ring_ready(audio_io->playback_ring)) {
+            const size_t prebuffer_frame_count =
+                audio_io->playback_rebuffering
+                    ? AUDIO_IO_PLAYBACK_RECOVERY_BUFFER_FRAMES
+                    : AUDIO_IO_PLAYBACK_INITIAL_BUFFER_FRAMES;
+            if (!audio_playback_queue_head_ready(
+                    audio_io->playback_queue,
+                    prebuffer_frame_count)) {
                 xSemaphoreGive(audio_io->lock);
                 (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
                 continue;
@@ -499,6 +521,7 @@ static void audio_io_task(void *context)
             }
             audio_io_event_t started_event = {0};
             bool session_still_active = false;
+            bool emit_started_event = false;
             xSemaphoreTake(audio_io->lock, portMAX_DELAY);
             if (!audio_io->stop_requested && audio_io->playback_active &&
                 audio_io->playback_generation == generation) {
@@ -506,13 +529,19 @@ static void audio_io_task(void *context)
                 if (audio_hardware_playback_unmute(audio_io->hardware) ==
                     AUDIO_HARDWARE_RESULT_OK) {
                     audio_io->status.playback_state = AUDIO_IO_PLAYBACK_STATE_PLAYING;
-                    audio_io->playback_deadline_us =
-                        playback_deadline_us(audio_io->status.sample_count);
-                    copy_active_event(
-                        audio_io,
-                        AUDIO_IO_EVENT_PLAYBACK_STARTED,
-                        AUDIO_IO_RESULT_OK,
-                        &started_event);
+                    audio_io->playback_buffered_until_us =
+                        playback_buffered_until_us(
+                            AUDIO_IO_PLAYBACK_PRELOAD_DURATION_US);
+                    audio_io->playback_rebuffering = false;
+                    if (!audio_io->playback_started) {
+                        audio_io->playback_started = true;
+                        copy_active_event(
+                            audio_io,
+                            AUDIO_IO_EVENT_PLAYBACK_STARTED,
+                            AUDIO_IO_RESULT_OK,
+                            &started_event);
+                        emit_started_event = true;
+                    }
                     session_still_active = true;
                 }
             }
@@ -526,14 +555,16 @@ static void audio_io_task(void *context)
                     true);
                 continue;
             }
-            emit_event(audio_io, &started_event);
+            if (emit_started_event) {
+                emit_event(audio_io, &started_event);
+            }
             continue;
         }
-        if (audio_playback_ring_drained(audio_io->playback_ring)) {
+        if (audio_playback_queue_head_drained(audio_io->playback_queue)) {
             const int64_t now_us = esp_timer_get_time();
-            if (audio_io->playback_deadline_us > now_us) {
+            if (audio_io->playback_buffered_until_us > now_us) {
                 const uint64_t remaining_us =
-                    (uint64_t)(audio_io->playback_deadline_us - now_us);
+                    (uint64_t)(audio_io->playback_buffered_until_us - now_us);
                 const uint64_t remaining_ms = (remaining_us + 999U) / 1000U;
                 const TickType_t wait_ticks = pdMS_TO_TICKS(
                     remaining_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining_ms);
@@ -550,21 +581,62 @@ static void audio_io_task(void *context)
                 true);
             continue;
         }
-        size_t pcm_sample_count = 0U;
-        const audio_playback_ring_result_t pop_result =
-            audio_playback_ring_pop(audio_io->playback_ring, pcm_samples, &pcm_sample_count);
-        update_ring_status(audio_io);
-        xSemaphoreGive(audio_io->lock);
-        if (pop_result == AUDIO_PLAYBACK_RING_RESULT_EMPTY) {
-            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        const int64_t now_us = esp_timer_get_time();
+        if (audio_io->playback_buffered_until_us <= now_us) {
+            xSemaphoreGive(audio_io->lock);
+            const audio_hardware_result_t mute_result =
+                audio_hardware_playback_mute(audio_io->hardware);
+            const audio_hardware_result_t stop_result =
+                audio_hardware_playback_stop(audio_io->hardware);
+            bool recovery_failed = false;
+            xSemaphoreTake(audio_io->lock, portMAX_DELAY);
+            if (stop_result == AUDIO_HARDWARE_RESULT_OK) {
+                audio_io->hardware_playing = false;
+            }
+            if (audio_io->playback_active &&
+                audio_io->playback_generation == generation) {
+                audio_io->playback_buffered_until_us = 0;
+                if (mute_result == AUDIO_HARDWARE_RESULT_OK &&
+                    stop_result == AUDIO_HARDWARE_RESULT_OK) {
+                    audio_io->playback_rebuffering = true;
+                    audio_io->status.playback_state = AUDIO_IO_PLAYBACK_STATE_BUFFERING;
+                    ++audio_io->status.playback_rebuffer_count;
+                } else {
+                    recovery_failed = true;
+                }
+            }
+            xSemaphoreGive(audio_io->lock);
+            if (recovery_failed) {
+                playback_finish(
+                    audio_io,
+                    generation,
+                    AUDIO_IO_EVENT_PLAYBACK_FAILED,
+                    AUDIO_IO_RESULT_HARDWARE_FAILURE,
+                    stop_result != AUDIO_HARDWARE_RESULT_OK);
+            }
             continue;
         }
-        if (pop_result != AUDIO_PLAYBACK_RING_RESULT_OK) {
+        size_t pcm_sample_count = 0U;
+        const audio_playback_queue_result_t pop_result =
+            audio_playback_queue_pop(audio_io->playback_queue, pcm_samples, &pcm_sample_count);
+        update_playback_status(audio_io);
+        const int64_t buffered_until_us = audio_io->playback_buffered_until_us;
+        xSemaphoreGive(audio_io->lock);
+        if (pop_result == AUDIO_PLAYBACK_QUEUE_RESULT_EMPTY) {
+            const uint64_t remaining_us =
+                (uint64_t)(buffered_until_us - now_us);
+            const uint64_t remaining_ms = (remaining_us + 999U) / 1000U;
+            const TickType_t wait_ticks = pdMS_TO_TICKS(
+                remaining_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining_ms);
+            (void)ulTaskNotifyTake(pdTRUE, wait_ticks == 0U ? 1U : wait_ticks);
+            continue;
+        }
+        if (pop_result != AUDIO_PLAYBACK_QUEUE_RESULT_OK) {
             playback_finish(
                 audio_io,
                 generation,
                 AUDIO_IO_EVENT_PLAYBACK_FAILED,
-                ring_result(pop_result),
+                queue_result(pop_result),
                 true);
             continue;
         }
@@ -594,14 +666,22 @@ static void audio_io_task(void *context)
             continue;
         }
         const uint64_t frame_duration_us = sample_duration_us(pcm_sample_count);
-        const uint64_t frame_deadline_us =
-            (uint64_t)esp_timer_get_time() + frame_duration_us;
         xSemaphoreTake(audio_io->lock, portMAX_DELAY);
-        if (audio_io->playback_active && audio_io->playback_generation == generation &&
-            frame_deadline_us > (uint64_t)audio_io->playback_deadline_us) {
-            audio_io->playback_deadline_us = frame_deadline_us > INT64_MAX
-                                                 ? INT64_MAX
-                                                 : (int64_t)frame_deadline_us;
+        if (audio_io->playback_active &&
+            audio_io->playback_generation == generation) {
+            const uint64_t current_time_us = (uint64_t)esp_timer_get_time();
+            const uint64_t buffered_until_us =
+                audio_io->playback_buffered_until_us > (int64_t)current_time_us
+                    ? (uint64_t)audio_io->playback_buffered_until_us
+                    : current_time_us;
+            const uint64_t extended_buffered_until_us =
+                frame_duration_us > UINT64_MAX - buffered_until_us
+                    ? UINT64_MAX
+                    : buffered_until_us + frame_duration_us;
+            audio_io->playback_buffered_until_us =
+                extended_buffered_until_us > INT64_MAX
+                    ? INT64_MAX
+                    : (int64_t)extended_buffered_until_us;
         }
         xSemaphoreGive(audio_io->lock);
     }
@@ -620,8 +700,7 @@ static void audio_io_task(void *context)
     xSemaphoreTake(audio_io->lock, portMAX_DELAY);
     audio_io->hardware_playing = false;
     audio_io->hardware_capturing = false;
-    clear_active_playback(audio_io);
-    clear_pending_playback(audio_io);
+    clear_playback_queue(audio_io);
     clear_capture(audio_io);
     audio_io->started = false;
     audio_io->stop_requested = false;
@@ -657,27 +736,17 @@ audio_io_result_t audio_io_create(const audio_io_config_t *config, audio_io_t **
         free(created);
         return AUDIO_IO_RESULT_NO_MEMORY;
     }
-    const audio_playback_ring_result_t ring_create_result =
-        audio_playback_ring_create(&created->playback_ring);
-    if (ring_create_result != AUDIO_PLAYBACK_RING_RESULT_OK) {
+    const audio_playback_queue_result_t queue_create_result =
+        audio_playback_queue_create(&created->playback_queue);
+    if (queue_create_result != AUDIO_PLAYBACK_QUEUE_RESULT_OK) {
         vEventGroupDelete(created->lifecycle_events);
         vSemaphoreDelete(created->lock);
         free(created);
-        return ring_result(ring_create_result);
-    }
-    const audio_playback_ring_result_t pending_ring_create_result =
-        audio_playback_ring_create(&created->pending_playback_ring);
-    if (pending_ring_create_result != AUDIO_PLAYBACK_RING_RESULT_OK) {
-        audio_playback_ring_destroy(created->playback_ring);
-        vEventGroupDelete(created->lifecycle_events);
-        vSemaphoreDelete(created->lock);
-        free(created);
-        return ring_result(pending_ring_create_result);
+        return queue_result(queue_create_result);
     }
     if (audio_hardware_create(&created->hardware) != AUDIO_HARDWARE_RESULT_OK) {
         audio_hardware_destroy(created->hardware);
-        audio_playback_ring_destroy(created->playback_ring);
-        audio_playback_ring_destroy(created->pending_playback_ring);
+        audio_playback_queue_destroy(created->playback_queue);
         vEventGroupDelete(created->lifecycle_events);
         vSemaphoreDelete(created->lock);
         free(created);
@@ -740,7 +809,7 @@ audio_io_result_t audio_io_capture_begin(
         return AUDIO_IO_RESULT_INVALID_STATE;
     }
     if (audio_io->capture_requested || audio_io->capture_active ||
-        audio_io->playback_active || audio_io->pending_playback_active ||
+        audio_io->playback_active ||
         (audio_io->hardware_playing && !audio_io->cancellation_pending)) {
         xSemaphoreGive(audio_io->lock);
         return AUDIO_IO_RESULT_BUSY;
@@ -840,50 +909,21 @@ audio_io_result_t audio_io_playback_begin(
         audio_io->discarded_session_active = false;
         memset(audio_io->discarded_output_id, 0, sizeof(audio_io->discarded_output_id));
     }
-    if (audio_io->playback_active) {
-        audio_playback_ring_status_t current_status = {0};
-        audio_playback_ring_get_status(audio_io->playback_ring, &current_status);
-        if (!current_status.ended || audio_io->pending_playback_active) {
-            xSemaphoreGive(audio_io->lock);
-            return AUDIO_IO_RESULT_INVALID_STATE;
-        }
-        const audio_io_result_t pending_result = ring_result(audio_playback_ring_begin(
-            audio_io->pending_playback_ring,
-            connection_epoch,
-            playback_start->stream_id,
-            playback_start->sample_count));
-        if (pending_result == AUDIO_IO_RESULT_OK) {
-            audio_io->pending_playback_active = true;
-            audio_io->pending_connection_epoch = connection_epoch;
-            audio_io->pending_stream_id = playback_start->stream_id;
-            memcpy(audio_io->pending_output_id, playback_start->output_id,
-                   sizeof(audio_io->pending_output_id));
-            audio_io->status.queued_playback_count = 1U;
-        }
-        TaskHandle_t task = audio_io->task;
-        xSemaphoreGive(audio_io->lock);
-        if (pending_result == AUDIO_IO_RESULT_OK && task != NULL) {
-            xTaskNotifyGive(task);
-        }
-        return pending_result;
-    }
-    if (audio_io->cancellation_pending || audio_io->hardware_playing) {
+    if (!audio_io->playback_active &&
+        (audio_io->cancellation_pending || audio_io->hardware_playing)) {
         xSemaphoreGive(audio_io->lock);
         return AUDIO_IO_RESULT_BUSY;
     }
-    const audio_io_result_t result = ring_result(audio_playback_ring_begin(
-        audio_io->playback_ring,
+    const audio_io_result_t result = queue_result(audio_playback_queue_begin(
+        audio_io->playback_queue,
         connection_epoch,
-        playback_start->stream_id,
-        playback_start->sample_count));
+        playback_start));
     if (result == AUDIO_IO_RESULT_OK) {
-        audio_io->playback_active = true;
-        ++audio_io->playback_generation;
-        memcpy(audio_io->output_id, playback_start->output_id, sizeof(audio_io->output_id));
-        audio_io->status.playback_state = AUDIO_IO_PLAYBACK_STATE_BUFFERING;
-        memcpy(audio_io->status.output_id, playback_start->output_id,
-               sizeof(audio_io->status.output_id));
-        update_ring_status(audio_io);
+        if (!audio_io->playback_active) {
+            (void)activate_playback_head(audio_io);
+        } else {
+            update_playback_status(audio_io);
+        }
     }
     TaskHandle_t task = audio_io->task;
     xSemaphoreGive(audio_io->lock);
@@ -914,15 +954,12 @@ audio_io_result_t audio_io_playback_push(
         xSemaphoreGive(audio_io->lock);
         return AUDIO_IO_RESULT_OK;
     }
-    const bool pending_frame = audio_io->pending_playback_active &&
-                               audio_io->pending_connection_epoch == connection_epoch &&
-                               audio_io->pending_stream_id == frame->stream_id;
-    const audio_io_result_t result = ring_result(audio_playback_ring_push(
-        pending_frame ? audio_io->pending_playback_ring : audio_io->playback_ring,
+    const audio_io_result_t result = queue_result(audio_playback_queue_push(
+        audio_io->playback_queue,
         connection_epoch,
         frame));
-    if (result == AUDIO_IO_RESULT_OK && !pending_frame) {
-        update_ring_status(audio_io);
+    if (result == AUDIO_IO_RESULT_OK) {
+        update_playback_status(audio_io);
     }
     TaskHandle_t task = audio_io->task;
     xSemaphoreGive(audio_io->lock);
@@ -943,17 +980,10 @@ static audio_io_result_t cancel_active_playback(
         &audio_io->cancellation_event);
     if (retain_discarded_session) {
         audio_io->discarded_session_active = true;
-        if (audio_io->pending_playback_active) {
-            audio_io->discarded_connection_epoch = audio_io->pending_connection_epoch;
-            audio_io->discarded_stream_id = audio_io->pending_stream_id;
-            memcpy(audio_io->discarded_output_id, audio_io->pending_output_id,
-                   sizeof(audio_io->discarded_output_id));
-        } else {
-            audio_io->discarded_connection_epoch = audio_io->status.connection_epoch;
-            audio_io->discarded_stream_id = audio_io->status.stream_id;
-            memcpy(audio_io->discarded_output_id, audio_io->output_id,
-                   sizeof(audio_io->discarded_output_id));
-        }
+        audio_io->discarded_connection_epoch = audio_io->status.connection_epoch;
+        audio_io->discarded_stream_id = audio_io->status.stream_id;
+        memcpy(audio_io->discarded_output_id, audio_io->output_id,
+               sizeof(audio_io->discarded_output_id));
     }
     const audio_hardware_result_t mute_result =
         audio_hardware_playback_mute(audio_io->hardware);
@@ -962,8 +992,7 @@ static audio_io_result_t cancel_active_playback(
         audio_io->cancellation_event.result = AUDIO_IO_RESULT_HARDWARE_FAILURE;
     }
     audio_io->cancellation_pending = true;
-    clear_pending_playback(audio_io);
-    clear_active_playback(audio_io);
+    clear_playback_queue(audio_io);
     return mute_result == AUDIO_HARDWARE_RESULT_OK ? AUDIO_IO_RESULT_OK
                                                    : AUDIO_IO_RESULT_HARDWARE_FAILURE;
 }
@@ -991,43 +1020,31 @@ audio_io_result_t audio_io_playback_end(
         xSemaphoreGive(audio_io->lock);
         return AUDIO_IO_RESULT_OK;
     }
-    if (audio_io->pending_playback_active &&
-        audio_io->pending_connection_epoch == connection_epoch &&
-        audio_io->pending_stream_id == playback_end->stream_id &&
-        strcmp(audio_io->pending_output_id, playback_end->output_id) == 0) {
-        audio_io_result_t pending_result = AUDIO_IO_RESULT_OK;
-        if (strcmp(playback_end->reason, "completed") == 0) {
-            pending_result = ring_result(audio_playback_ring_end(
-                audio_io->pending_playback_ring,
-                connection_epoch,
-                playback_end->stream_id));
-        } else {
-            clear_pending_playback(audio_io);
-        }
-        TaskHandle_t task = audio_io->task;
-        xSemaphoreGive(audio_io->lock);
-        if (pending_result == AUDIO_IO_RESULT_OK && task != NULL) {
-            xTaskNotifyGive(task);
-        }
-        return pending_result;
-    }
-    if (!audio_io->playback_active || audio_io->status.connection_epoch != connection_epoch ||
-        audio_io->status.stream_id != playback_end->stream_id ||
-        strcmp(audio_io->output_id, playback_end->output_id) != 0) {
+    if (!audio_io->playback_active) {
         xSemaphoreGive(audio_io->lock);
         return AUDIO_IO_RESULT_SESSION_MISMATCH;
     }
     audio_io_result_t result;
     if (strcmp(playback_end->reason, "completed") == 0) {
-        result = ring_result(audio_playback_ring_end(
-            audio_io->playback_ring,
+        result = queue_result(audio_playback_queue_end(
+            audio_io->playback_queue,
             connection_epoch,
-            playback_end->stream_id));
+            playback_end));
         if (result == AUDIO_IO_RESULT_OK) {
-            update_ring_status(audio_io);
+            update_playback_status(audio_io);
         }
-    } else {
+    } else if (audio_io->status.connection_epoch == connection_epoch &&
+               audio_io->status.stream_id == playback_end->stream_id &&
+               strcmp(audio_io->output_id, playback_end->output_id) == 0) {
         result = cancel_active_playback(audio_io, false);
+    } else {
+        result = queue_result(audio_playback_queue_discard_tail(
+            audio_io->playback_queue,
+            connection_epoch,
+            playback_end));
+        if (result == AUDIO_IO_RESULT_OK) {
+            update_playback_status(audio_io);
+        }
     }
     TaskHandle_t task = audio_io->task;
     xSemaphoreGive(audio_io->lock);
@@ -1109,8 +1126,7 @@ void audio_io_destroy(audio_io_t *audio_io)
     }
     audio_io_stop(audio_io);
     audio_hardware_destroy(audio_io->hardware);
-    audio_playback_ring_destroy(audio_io->playback_ring);
-    audio_playback_ring_destroy(audio_io->pending_playback_ring);
+    audio_playback_queue_destroy(audio_io->playback_queue);
     vEventGroupDelete(audio_io->lifecycle_events);
     vSemaphoreDelete(audio_io->lock);
     memset(audio_io, 0, sizeof(*audio_io));

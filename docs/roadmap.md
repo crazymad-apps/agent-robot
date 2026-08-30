@@ -7,12 +7,13 @@
 > [`software-architecture.md`](software-architecture.md) 为架构基线；仍标记为冻结点的事项，
 > 必须在本文档对应阶段完成验证或联合设计后确定。
 
-阶段一硬件原型、S2.0–S2.3 以及 S3.0 Demo 链路验证已完成；S3.1 已进入正式协议实施。
+阶段一硬件原型、S2.0–S2.3、S3.0 Demo 链路验证以及 S3.1 正式设备接入基线已完成。
 S3.0 已用隔离的简易 Voice Demo Host 验证设备通信、ASR、Agent SDK、TTS、连续 20 轮 PTT
 和主要故障恢复；这些证据只作为正式接入输入，Demo Host 已冻结归档，不进入产品架构。S3.1
 以 ez-assistant v0.21.0 联调工作树为暂时冻结基线：Device Gateway 与 SpeechService 作为
 Runtime Host 的可降级子系统，终端通过 LAN WSS `/device` 接入；Desktop 继续使用原有
-loopback HTTP/SSE。联调中若发现协议缺口，可以在 ez-assistant 同步修改并重新冻结 fixtures。
+loopback HTTP/SSE。S3.1 已冻结 device protocol 1.0 的 fixtures、关键实现 hash 与终端组合版本；
+ez-assistant 的正式发布提交在其 v0.21.0 M8 补齐。
 
 ## 1. 路线目标
 

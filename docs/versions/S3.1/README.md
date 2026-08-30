@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | 执行中：P0 正式工程基线已建立，上游可复现提交待冻结 |
+| 状态 | 已完成：正式 Device Gateway 接入、真实语音闭环、连续输入聚合与播报抢占通过 |
 | 设计日期 | 2026-08-28 |
 | 所属路线 | 阶段三：Agent 接入 |
 | 前置阶段 | S3.0：已完成并归档 |
@@ -90,14 +90,19 @@ S3.1 只建立正式设备接入基线，不以连续 20 轮、Provider 故障�
   退避，以及 mDNS、错误证书阻断、正确证书连接真实 Host `/device` 的 clean-image 验证。隔离恢复
   Host 又在保持 installation identity 和证书 pin 不变的情况下关闭旧端口、改用新端口重新广播；正式
   `device_connection` 依次完成旧连接关闭、缓存旧 endpoint 失败、重新发现和新 connection epoch 建立。
-  物理 AP 关闭/恢复及已认证会话重建仍未执行，因此 P2 仍为部分通过。
+  物理 AP 关闭/恢复及长稳会话重建归入 S3.4 扩展故障矩阵，不阻断本阶段正式接入基线归档。
 - P3 已实现正式 `device_identity` 与签名认证生命周期：单个有 schema/version/length/state 的 NVS blob 表达
   `pending|active` credential 或仅保留 Host binding 的 revoked 状态，加载时校验字符串边界、Host
   identity、保留位和 Ed25519 seed→public key 一致性。正式主程序已接入 fail-closed 启动策略：记录
   不存在时进入未配对扫描，记录损坏时禁用 Device Connection 而不自动换绑。正式连接服务严格处理
   `auth_challenge`、签名 `hello`、`hello_ack`、pending 激活、pending 认证失败安全清除，以及在线
   `device_revoked` 后保留 Host binding 并返回发现态。host fixture 与隔离 Host/ESP32-S3 clean-image
-  实机验证均已通过；完整 pairing 全序列、三个掉电点、active 通用认证失败与离线 revoke 仍待执行。
+  实机验证均已通过；多个 Host、完整 pairing 掉电点、active 通用认证失败与离线 revoke 的扩展实机
+  矩阵归入 S3.4。
 - 已在 ez-assistant 联调树原子修改 6 位配对码和离线 revoke，Rust/Node/Desktop/M7 验证通过。
-- ez-assistant v0.21.0 尚是包含未提交文件的联调树；精确文件 hash 已记录，但 P0 的
-  “由上游 commit 复现”门仍待上游正式提交后通过。
+- 已接通正式 PTT PCM、真实 DashScope ASR/TTS、当前 Controller Session、TTS FIFO、30% 播放增益、
+  2 秒连续输入聚合与播放中 PTT 抢占；正式链路累计完成超过 5 次真实交互，用户验收通过。
+- clean implementation commit `b699253` 的正式镜像已构建并刷入，设备从 NVS 加载 active identity、
+  自动恢复 online；镜像 SHA-256 为 `f2bc1716217972fd07d83af105040aaad9e575781892af52e15932d0fc4d9190`。
+- device protocol 1.0 已用 fixtures 与两端关键文件 SHA-256 冻结。ez-assistant v0.21.0 尚是包含未提交
+  文件的联调树，其发布提交由上游 M8 补齐，不把当前工作树表述为发布版本。

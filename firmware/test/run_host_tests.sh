@@ -108,6 +108,24 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -DCJSON_NESTING_LIMIT=64 \
+    -DCJSON_CIRCULAR_LIMIT=1000 \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    -I"$CJSON_DIR" \
+    "$CJSON_DIR/cJSON.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_control_envelope.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_application_heartbeat.c" \
+    "$FIRMWARE_DIR/test/host/device_application_heartbeat_test.c" \
+    -lm \
+    -o "$BUILD_DIR/device_application_heartbeat_test"
+
+"$BUILD_DIR/device_application_heartbeat_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     -I"$FIRMWARE_DIR/components/device_protocol/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \

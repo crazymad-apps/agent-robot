@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "device_authentication.h"
+#include "device_application_heartbeat.h"
 #include "device_base64url.h"
 #include "device_control_envelope.h"
 #include "device_hardware_random.h"
@@ -930,7 +931,44 @@ static void online_control_handle(
     device_connection_t *connection,
     const device_control_envelope_t *envelope)
 {
-    if (strcmp(device_control_envelope_message_type(envelope), "error") == 0) {
+    const char *message_type = device_control_envelope_message_type(envelope);
+    if (strcmp(message_type, "ping") == 0) {
+        device_application_heartbeat_t heartbeat = {0};
+        char message_id[DEVICE_CONNECTION_MESSAGE_ID_BYTES + 1U] = {0};
+        char encoded[DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES] = {0};
+        size_t encoded_size = 0U;
+        if (device_application_heartbeat_decode_ping(envelope, &heartbeat) !=
+                DEVICE_PROTOCOL_RESULT_OK ||
+            !create_random_token(
+                DEVICE_CONNECTION_MESSAGE_RANDOM_BYTES,
+                message_id,
+                sizeof(message_id)) ||
+            device_application_heartbeat_encode_pong(
+                message_id,
+                &heartbeat,
+                encoded,
+                sizeof(encoded),
+                &encoded_size) != DEVICE_PROTOCOL_RESULT_OK) {
+            memset(&heartbeat, 0, sizeof(heartbeat));
+            memset(encoded, 0, sizeof(encoded));
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+        const wss_transport_result_t send_result = wss_transport_send_text(
+            connection->transport,
+            (const uint8_t *)encoded,
+            encoded_size,
+            DEVICE_CONNECTION_SEND_TIMEOUT_MS);
+        memset(&heartbeat, 0, sizeof(heartbeat));
+        memset(encoded, 0, sizeof(encoded));
+        if (send_result != WSS_TRANSPORT_RESULT_OK) {
+            record_failure(connection, transport_failure(send_result), send_result);
+            return;
+        }
+    } else if (strcmp(message_type, "error") == 0) {
         device_authentication_error_t error = {0};
         if (device_authentication_decode_error(envelope, &error) !=
             DEVICE_AUTHENTICATION_RESULT_OK) {

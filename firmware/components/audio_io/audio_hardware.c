@@ -19,10 +19,25 @@ struct audio_hardware {
     i2s_chan_handle_t transmit_channel;
     i2s_chan_handle_t receive_channel;
     bool capture_enabled;
+    bool capture_clock_enabled;
     bool playback_enabled;
 };
 
 static const int32_t playback_silence[AUDIO_HARDWARE_SILENCE_WORD_COUNT];
+
+static esp_err_t preload_transmit_silence(audio_hardware_t *hardware)
+{
+    size_t bytes_loaded = 0U;
+    const esp_err_t result = i2s_channel_preload_data(
+        hardware->transmit_channel,
+        playback_silence,
+        sizeof(playback_silence),
+        &bytes_loaded);
+    if (result != ESP_OK) {
+        return result;
+    }
+    return bytes_loaded == 0U ? ESP_FAIL : ESP_OK;
+}
 
 static audio_hardware_result_t driver_result(esp_err_t result)
 {
@@ -116,18 +131,32 @@ audio_hardware_result_t audio_hardware_capture_start(audio_hardware_t *hardware)
     if (hardware == NULL) {
         return AUDIO_HARDWARE_RESULT_INVALID_ARGUMENT;
     }
-    if (hardware->capture_enabled || hardware->playback_enabled) {
+    if (hardware->capture_enabled || hardware->capture_clock_enabled ||
+        hardware->playback_enabled) {
         return AUDIO_HARDWARE_RESULT_INVALID_STATE;
     }
     if (gpio_set_level(AGENT_ROBOT_BOARD_AMPLIFIER_ENABLE_GPIO, 0) != ESP_OK) {
         return AUDIO_HARDWARE_RESULT_DRIVER_FAILURE;
     }
-    const audio_hardware_result_t result =
-        driver_result(i2s_channel_enable(hardware->receive_channel));
-    if (result == AUDIO_HARDWARE_RESULT_OK) {
-        hardware->capture_enabled = true;
+    esp_err_t result = preload_transmit_silence(hardware);
+    if (result == ESP_OK) {
+        result = i2s_channel_enable(hardware->transmit_channel);
+        if (result == ESP_OK) {
+            hardware->capture_clock_enabled = true;
+        }
     }
-    return result;
+    if (result == ESP_OK) {
+        result = i2s_channel_enable(hardware->receive_channel);
+        if (result == ESP_OK) {
+            hardware->capture_enabled = true;
+        }
+    }
+    if (result != ESP_OK && hardware->capture_clock_enabled) {
+        if (i2s_channel_disable(hardware->transmit_channel) == ESP_OK) {
+            hardware->capture_clock_enabled = false;
+        }
+    }
+    return driver_result(result);
 }
 
 audio_hardware_result_t audio_hardware_capture_read(audio_hardware_t *hardware, int32_t *i2s_words,
@@ -165,12 +194,16 @@ audio_hardware_result_t audio_hardware_capture_stop(audio_hardware_t *hardware)
     if (!hardware->capture_enabled) {
         return AUDIO_HARDWARE_RESULT_INVALID_STATE;
     }
-    const audio_hardware_result_t result =
-        driver_result(i2s_channel_disable(hardware->receive_channel));
-    if (result == AUDIO_HARDWARE_RESULT_OK) {
-        hardware->capture_enabled = false;
+    esp_err_t result = i2s_channel_disable(hardware->receive_channel);
+    if (result != ESP_OK) {
+        return driver_result(result);
     }
-    return result;
+    hardware->capture_enabled = false;
+    result = i2s_channel_disable(hardware->transmit_channel);
+    if (result == ESP_OK) {
+        hardware->capture_clock_enabled = false;
+    }
+    return driver_result(result);
 }
 
 audio_hardware_result_t audio_hardware_playback_start(audio_hardware_t *hardware)
@@ -178,18 +211,14 @@ audio_hardware_result_t audio_hardware_playback_start(audio_hardware_t *hardware
     if (hardware == NULL) {
         return AUDIO_HARDWARE_RESULT_INVALID_ARGUMENT;
     }
-    if (hardware->capture_enabled || hardware->playback_enabled) {
+    if (hardware->capture_enabled || hardware->capture_clock_enabled ||
+        hardware->playback_enabled) {
         return AUDIO_HARDWARE_RESULT_INVALID_STATE;
     }
     if (gpio_set_level(AGENT_ROBOT_BOARD_AMPLIFIER_ENABLE_GPIO, 0) != ESP_OK) {
         return AUDIO_HARDWARE_RESULT_DRIVER_FAILURE;
     }
-    size_t bytes_loaded = 0U;
-    esp_err_t result = i2s_channel_preload_data(hardware->transmit_channel, playback_silence,
-                                                sizeof(playback_silence), &bytes_loaded);
-    if (result == ESP_OK && bytes_loaded == 0U) {
-        result = ESP_FAIL;
-    }
+    esp_err_t result = preload_transmit_silence(hardware);
     if (result == ESP_OK) {
         result = i2s_channel_enable(hardware->transmit_channel);
     }
@@ -272,7 +301,7 @@ void audio_hardware_destroy(audio_hardware_t *hardware)
     if (hardware->capture_enabled) {
         (void)i2s_channel_disable(hardware->receive_channel);
     }
-    if (hardware->playback_enabled) {
+    if (hardware->capture_clock_enabled || hardware->playback_enabled) {
         (void)i2s_channel_disable(hardware->transmit_channel);
     }
     release_channels(hardware);

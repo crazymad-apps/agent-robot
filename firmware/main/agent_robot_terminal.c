@@ -17,8 +17,9 @@
 #include "nvs_flash.h"
 #include "terminal_ui.h"
 #include "terminal_interaction.h"
+#include "voice_input.h"
 
-#define TERMINAL_EVENT_QUEUE_LENGTH 16U
+#define TERMINAL_EVENT_QUEUE_LENGTH 32U
 #define TERMINAL_LIFECYCLE_TASK_STACK_BYTES 4096U
 #define TERMINAL_LIFECYCLE_TASK_PRIORITY 5U
 
@@ -28,6 +29,8 @@ typedef enum {
     TERMINAL_EVENT_DEVICE_CONNECTION,
     TERMINAL_EVENT_DEVICE_MEDIA_STATE,
     TERMINAL_EVENT_AUDIO_IO,
+    TERMINAL_EVENT_INTERACTION,
+    TERMINAL_EVENT_VOICE_INPUT,
 } terminal_event_type_t;
 
 typedef struct {
@@ -40,6 +43,8 @@ typedef struct {
     audio_io_result_t result;
     uint64_t connection_epoch;
     uint32_t stream_id;
+    uint64_t capture_session_id;
+    uint64_t capture_sample_count;
 } terminal_audio_io_event_t;
 
 typedef struct {
@@ -49,6 +54,8 @@ typedef struct {
         device_connection_event_t device_connection;
         terminal_media_state_event_t media_state;
         terminal_audio_io_event_t audio_io;
+        terminal_interaction_event_t interaction;
+        voice_input_event_t voice_input;
     } value;
 } terminal_event_t;
 
@@ -59,14 +66,18 @@ static device_connection_t *terminal_device_connection;
 static device_identity_t *terminal_device_identity;
 static terminal_interaction_t *terminal_interaction;
 static terminal_ui_t *terminal_user_interface;
+static voice_input_t *terminal_voice_input;
 static uint32_t terminal_event_drop_count;
 static uint32_t terminal_device_network_update_error_count;
 static uint32_t terminal_ui_update_error_count;
 static uint32_t terminal_audio_ingress_error_count;
 static uint32_t terminal_audio_cancel_error_count;
+static uint32_t terminal_voice_input_error_count;
+static uint32_t terminal_interaction_error_count;
 static bool terminal_device_paired;
 static bool terminal_device_online;
 static uint64_t terminal_online_connection_epoch;
+static uint64_t terminal_capture_session_id;
 static device_pairing_state_t terminal_pairing_state = DEVICE_PAIRING_STATE_READY;
 
 static void terminal_device_connection_network_changed(
@@ -247,7 +258,52 @@ static void terminal_audio_io_event(
             .result = event->result,
             .connection_epoch = event->connection_epoch,
             .stream_id = event->stream_id,
+            .capture_session_id = event->capture_session_id,
+            .capture_sample_count = event->capture_sample_count,
         },
+    };
+    if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+        (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+    }
+}
+
+static bool terminal_audio_capture_frame(
+    uint64_t capture_session_id,
+    const int16_t samples[AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME],
+    size_t sample_count,
+    void *context)
+{
+    (void)context;
+    return terminal_voice_input != NULL &&
+           voice_input_capture_frame(
+               terminal_voice_input,
+               capture_session_id,
+               samples,
+               sample_count);
+}
+
+static void terminal_interaction_event(
+    const terminal_interaction_event_t *event,
+    void *context)
+{
+    QueueHandle_t event_queue = context;
+    const terminal_event_t terminal_event = {
+        .type = TERMINAL_EVENT_INTERACTION,
+        .value.interaction = *event,
+    };
+    if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+        (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+    }
+}
+
+static void terminal_voice_input_event(
+    const voice_input_event_t *event,
+    void *context)
+{
+    QueueHandle_t event_queue = context;
+    const terminal_event_t terminal_event = {
+        .type = TERMINAL_EVENT_VOICE_INPUT,
+        .value.voice_input = *event,
     };
     if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
         (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
@@ -273,6 +329,17 @@ static bool terminal_device_media_event(
         return true;
     }
     if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED) {
+        if (terminal_voice_input == NULL ||
+            voice_input_accept(
+                terminal_voice_input,
+                event->connection_epoch,
+                &event->value.input_accepted) != VOICE_INPUT_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+            return false;
+        }
         QueueHandle_t event_queue = context;
         const terminal_event_t terminal_event = {
             .type = TERMINAL_EVENT_DEVICE_MEDIA_STATE,
@@ -338,11 +405,34 @@ static void terminal_device_connection_event_process(
     const device_connection_event_t *event)
 {
     if (event->state == DEVICE_CONNECTION_STATE_ONLINE) {
+        const bool new_online_epoch = !terminal_device_online ||
+                                      terminal_online_connection_epoch !=
+                                          event->connection_epoch;
         terminal_device_online = true;
         terminal_online_connection_epoch = event->connection_epoch;
+        if (new_online_epoch && terminal_voice_input != NULL &&
+            voice_input_connection_changed(
+                terminal_voice_input,
+                true,
+                event->connection_epoch) != VOICE_INPUT_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+        }
     } else if (terminal_device_online &&
                event->connection_epoch == terminal_online_connection_epoch) {
         terminal_device_online = false;
+        if (terminal_voice_input != NULL &&
+            voice_input_connection_changed(
+                terminal_voice_input,
+                false,
+                event->connection_epoch) != VOICE_INPUT_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+        }
         if (terminal_audio_io != NULL) {
             const audio_io_result_t cancel_result = audio_io_playback_cancel(
                 terminal_audio_io,
@@ -440,24 +530,196 @@ static void terminal_media_state_event_process(
 static void terminal_audio_io_event_process(
     const terminal_audio_io_event_t *event)
 {
-    if (event->type == AUDIO_IO_EVENT_PLAYBACK_STARTED && terminal_device_online &&
-        event->connection_epoch == terminal_online_connection_epoch) {
-        terminal_ui_project(TERMINAL_UI_STATE_SPEAKING, TERMINAL_UI_ERROR_NONE);
-    } else if ((event->type == AUDIO_IO_EVENT_PLAYBACK_COMPLETED ||
-                event->type == AUDIO_IO_EVENT_PLAYBACK_CANCELLED) &&
-               terminal_device_online &&
-               event->connection_epoch == terminal_online_connection_epoch) {
-        terminal_ui_project(TERMINAL_UI_STATE_READY, TERMINAL_UI_ERROR_NONE);
-    } else if (event->type == AUDIO_IO_EVENT_PLAYBACK_FAILED) {
+    if (event->type <= AUDIO_IO_EVENT_PLAYBACK_FAILED) {
+        if (event->type == AUDIO_IO_EVENT_PLAYBACK_STARTED && terminal_device_online &&
+            event->connection_epoch == terminal_online_connection_epoch) {
+            terminal_ui_project(TERMINAL_UI_STATE_SPEAKING, TERMINAL_UI_ERROR_NONE);
+        } else if ((event->type == AUDIO_IO_EVENT_PLAYBACK_COMPLETED ||
+                    event->type == AUDIO_IO_EVENT_PLAYBACK_CANCELLED) &&
+                   terminal_device_online &&
+                   event->connection_epoch == terminal_online_connection_epoch) {
+            terminal_ui_project(TERMINAL_UI_STATE_READY, TERMINAL_UI_ERROR_NONE);
+        } else if (event->type == AUDIO_IO_EVENT_PLAYBACK_FAILED) {
+            terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_AUDIO);
+        }
+        ESP_LOGI(
+            TAG,
+            "event=audio_playback type=%u result=%u stream_id=%lu connection_epoch=%llu",
+            (unsigned int)event->type,
+            (unsigned int)event->result,
+            (unsigned long)event->stream_id,
+            (unsigned long long)event->connection_epoch);
+        return;
+    }
+
+    if (event->type == AUDIO_IO_EVENT_CAPTURE_STARTED &&
+        event->capture_session_id == terminal_capture_session_id) {
+        terminal_ui_project(TERMINAL_UI_STATE_LISTENING, TERMINAL_UI_ERROR_NONE);
+    } else if (event->type == AUDIO_IO_EVENT_CAPTURE_COMPLETED &&
+               event->capture_session_id == terminal_capture_session_id) {
+        const uint64_t frame_count =
+            event->capture_sample_count / AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME;
+        const voice_input_result_t seal_result =
+            event->capture_sample_count != 0U &&
+                    event->capture_sample_count % AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME == 0U &&
+                    terminal_voice_input != NULL
+                ? voice_input_seal(
+                      terminal_voice_input,
+                      event->capture_session_id,
+                      frame_count)
+                : VOICE_INPUT_RESULT_INVALID_ARGUMENT;
+        terminal_capture_session_id = 0U;
+        if (seal_result == VOICE_INPUT_RESULT_OK) {
+            terminal_ui_project(
+                terminal_device_online ? TERMINAL_UI_STATE_THINKING
+                                       : TERMINAL_UI_STATE_CONNECTING,
+                TERMINAL_UI_ERROR_NONE);
+        } else {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+            terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_AUDIO);
+        }
+    } else if ((event->type == AUDIO_IO_EVENT_CAPTURE_CANCELLED ||
+                event->type == AUDIO_IO_EVENT_CAPTURE_FAILED) &&
+               event->capture_session_id == terminal_capture_session_id) {
+        if (terminal_voice_input != NULL) {
+            (void)voice_input_cancel(
+                terminal_voice_input,
+                event->capture_session_id);
+        }
+        terminal_capture_session_id = 0U;
+        terminal_ui_project(
+            event->type == AUDIO_IO_EVENT_CAPTURE_FAILED
+                ? TERMINAL_UI_STATE_ERROR
+                : (terminal_device_online ? TERMINAL_UI_STATE_READY
+                                          : TERMINAL_UI_STATE_CONNECTING),
+            event->type == AUDIO_IO_EVENT_CAPTURE_FAILED
+                ? TERMINAL_UI_ERROR_AUDIO
+                : TERMINAL_UI_ERROR_NONE);
+    }
+    ESP_LOGI(
+        TAG,
+        "event=audio_capture type=%u result=%u frames=%llu samples=%llu",
+        (unsigned int)event->type,
+        (unsigned int)event->result,
+        (unsigned long long)(
+            event->capture_sample_count / AUDIO_IO_CAPTURE_SAMPLES_PER_FRAME),
+        (unsigned long long)event->capture_sample_count);
+}
+
+static void terminal_ptt_pressed_process(void)
+{
+    if (!terminal_device_online || terminal_voice_input == NULL ||
+        terminal_audio_io == NULL || terminal_capture_session_id != 0U) {
+        return;
+    }
+    audio_io_status_t audio_status = {0};
+    audio_io_get_status(terminal_audio_io, &audio_status);
+    if (audio_status.playback_state == AUDIO_IO_PLAYBACK_STATE_BUFFERING ||
+        audio_status.playback_state == AUDIO_IO_PLAYBACK_STATE_PLAYING) {
+        const audio_io_result_t cancel_result = audio_io_playback_cancel(
+            terminal_audio_io,
+            audio_status.connection_epoch);
+        if (cancel_result != AUDIO_IO_RESULT_OK &&
+            cancel_result != AUDIO_IO_RESULT_INVALID_STATE) {
+            (void)__atomic_fetch_add(
+                &terminal_audio_cancel_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+            terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_AUDIO);
+            return;
+        }
+        if (device_connection_send_playback_cancel(
+                terminal_device_connection,
+                audio_status.connection_epoch,
+                audio_status.output_id,
+                audio_status.stream_id) != DEVICE_CONNECTION_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_voice_input_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+        }
+    }
+
+    uint64_t capture_session_id = 0U;
+    if (voice_input_begin(
+            terminal_voice_input,
+            terminal_online_connection_epoch,
+            &capture_session_id) != VOICE_INPUT_RESULT_OK) {
+        return;
+    }
+    const audio_io_result_t capture_result = audio_io_capture_begin(
+        terminal_audio_io,
+        capture_session_id);
+    if (capture_result != AUDIO_IO_RESULT_OK) {
+        (void)voice_input_cancel(terminal_voice_input, capture_session_id);
+        (void)__atomic_fetch_add(
+            &terminal_interaction_error_count,
+            1U,
+            __ATOMIC_RELAXED);
+        terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_AUDIO);
+        return;
+    }
+    terminal_capture_session_id = capture_session_id;
+}
+
+static void terminal_interaction_event_process(
+    const terminal_interaction_event_t *event)
+{
+    if (event->type == TERMINAL_INTERACTION_EVENT_PTT_PRESSED) {
+        terminal_ptt_pressed_process();
+        return;
+    }
+    if (event->type == TERMINAL_INTERACTION_EVENT_PTT_RELEASED &&
+        terminal_capture_session_id != 0U && terminal_audio_io != NULL) {
+        const audio_io_result_t result = audio_io_capture_end(
+            terminal_audio_io,
+            terminal_capture_session_id);
+        if (result != AUDIO_IO_RESULT_OK) {
+            (void)__atomic_fetch_add(
+                &terminal_interaction_error_count,
+                1U,
+                __ATOMIC_RELAXED);
+        }
+    }
+}
+
+static void terminal_voice_input_event_process(
+    const voice_input_event_t *event)
+{
+    if (event->type == VOICE_INPUT_EVENT_SEALED ||
+        event->type == VOICE_INPUT_EVENT_TRANSMISSION_STARTED ||
+               event->type == VOICE_INPUT_EVENT_AWAITING_ACCEPTANCE ||
+               event->type == VOICE_INPUT_EVENT_ACCEPTED) {
+        terminal_ui_project(
+            terminal_device_online ? TERMINAL_UI_STATE_THINKING
+                                   : TERMINAL_UI_STATE_CONNECTING,
+            TERMINAL_UI_ERROR_NONE);
+    } else if (event->type == VOICE_INPUT_EVENT_CANCELLED) {
+        terminal_ui_project(
+            terminal_device_online ? TERMINAL_UI_STATE_READY
+                                   : TERMINAL_UI_STATE_CONNECTING,
+            TERMINAL_UI_ERROR_NONE);
+    } else if (event->type == VOICE_INPUT_EVENT_EXPIRED ||
+               event->type == VOICE_INPUT_EVENT_TOO_LONG ||
+               event->type == VOICE_INPUT_EVENT_FAILED) {
+        if (terminal_capture_session_id != 0U && terminal_audio_io != NULL) {
+            (void)audio_io_capture_cancel(
+                terminal_audio_io,
+                terminal_capture_session_id);
+        }
         terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_AUDIO);
     }
     ESP_LOGI(
         TAG,
-        "event=audio_playback type=%u result=%u stream_id=%lu connection_epoch=%llu",
+        "event=voice_input type=%u result=%u frames=%llu samples=%llu retransmissions=%lu",
         (unsigned int)event->type,
         (unsigned int)event->result,
-        (unsigned long)event->stream_id,
-        (unsigned long long)event->connection_epoch);
+        (unsigned long long)event->frame_count,
+        (unsigned long long)event->sample_count,
+        (unsigned long)event->retransmission_count);
 }
 
 static void terminal_device_connection_network_changed(
@@ -585,6 +847,26 @@ static void terminal_lifecycle_task(void *context)
                 "event=audio_cancel_failed count=%lu",
                 (unsigned long)audio_cancel_errors);
         }
+        const uint32_t voice_input_errors = __atomic_exchange_n(
+            &terminal_voice_input_error_count,
+            0U,
+            __ATOMIC_RELAXED);
+        if (voice_input_errors != 0U) {
+            ESP_LOGE(
+                TAG,
+                "event=voice_input_operation_failed count=%lu",
+                (unsigned long)voice_input_errors);
+        }
+        const uint32_t interaction_errors = __atomic_exchange_n(
+            &terminal_interaction_error_count,
+            0U,
+            __ATOMIC_RELAXED);
+        if (interaction_errors != 0U) {
+            ESP_LOGE(
+                TAG,
+                "event=terminal_interaction_failed count=%lu",
+                (unsigned long)interaction_errors);
+        }
         if (event.type == TERMINAL_EVENT_DEVICE_CONNECTION) {
             terminal_device_connection_event_process(&event.value.device_connection);
             continue;
@@ -595,6 +877,14 @@ static void terminal_lifecycle_task(void *context)
         }
         if (event.type == TERMINAL_EVENT_AUDIO_IO) {
             terminal_audio_io_event_process(&event.value.audio_io);
+            continue;
+        }
+        if (event.type == TERMINAL_EVENT_INTERACTION) {
+            terminal_interaction_event_process(&event.value.interaction);
+            continue;
+        }
+        if (event.type == TERMINAL_EVENT_VOICE_INPUT) {
+            terminal_voice_input_event_process(&event.value.voice_input);
             continue;
         }
         const network_connectivity_event_t *network_event = &event.value.network;
@@ -718,6 +1008,8 @@ void app_main(void)
         .playback_gain_percent = AUDIO_IO_DEFAULT_PLAYBACK_GAIN_PERCENT,
         .event_callback = terminal_audio_io_event,
         .event_context = terminal_event_queue,
+        .capture_frame_callback = terminal_audio_capture_frame,
+        .capture_frame_context = NULL,
     };
     ESP_ERROR_CHECK(
         audio_io_create(&audio_io_config, &terminal_audio_io) == AUDIO_IO_RESULT_OK
@@ -760,6 +1052,28 @@ void app_main(void)
                 : ESP_FAIL);
         ESP_ERROR_CHECK(
             device_connection_start(terminal_device_connection) == DEVICE_CONNECTION_RESULT_OK
+                ? ESP_OK
+                : ESP_FAIL);
+        const voice_input_config_t voice_input_config = {
+            .connection = terminal_device_connection,
+            .output_preference = DEVICE_OUTPUT_PREFERENCE_AUDIO,
+            .event_callback = terminal_voice_input_event,
+            .event_context = terminal_event_queue,
+        };
+        ESP_ERROR_CHECK(
+            voice_input_create(&voice_input_config, &terminal_voice_input) ==
+                    VOICE_INPUT_RESULT_OK
+                ? ESP_OK
+                : ESP_FAIL);
+        ESP_ERROR_CHECK(
+            voice_input_start(terminal_voice_input) == VOICE_INPUT_RESULT_OK
+                ? ESP_OK
+                : ESP_FAIL);
+        ESP_ERROR_CHECK(
+            terminal_interaction_start(
+                terminal_interaction,
+                terminal_interaction_event,
+                terminal_event_queue) == TERMINAL_INTERACTION_RESULT_OK
                 ? ESP_OK
                 : ESP_FAIL);
         terminal_ui_project(terminal_connection_ui_state(), TERMINAL_UI_ERROR_NONE);

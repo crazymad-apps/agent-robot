@@ -292,9 +292,17 @@ void app_main(void)
         pdFALSE,
         pdFALSE,
         pdMS_TO_TICKS(30000U));
+    const device_identity_result_t active_load_result =
+        device_identity_load(identity_store, &record);
+    ESP_LOGI(
+        TAG,
+        "active credential check result=%d state=%d event_bits=0x%lx",
+        (int)active_load_result,
+        (int)record.state,
+        (unsigned long)bits);
     if ((bits & VALIDATION_FAILED_BIT) != 0U ||
         (bits & VALIDATION_ONLINE_BIT) == 0U ||
-        device_identity_load(identity_store, &record) != DEVICE_IDENTITY_RESULT_OK ||
+        active_load_result != DEVICE_IDENTITY_RESULT_OK ||
         record.state != DEVICE_IDENTITY_STATE_ACTIVE) {
         validation_fail("pending_activation", ESP_FAIL);
     }

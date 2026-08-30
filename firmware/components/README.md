@@ -13,7 +13,7 @@
 | [`device_connection`](device_connection/) | Pairing, authentication, heartbeat and connection recovery |
 | [`network_connectivity`](network_connectivity/) | Wi-Fi credentials, IP epochs and bounded reconnect policy |
 | `audio_io` | I2S capture, playback and PCM conversion |
-| `interaction` | PTT lifecycle and the single authoritative interaction state |
+| [`interaction`](interaction/) | Power-on pairing reset policy and the single authoritative interaction boundary |
 | `ui` | Minimal LVGL status projection |
 | `diagnostics` | Bounded counters, resource snapshots and redacted events |
 

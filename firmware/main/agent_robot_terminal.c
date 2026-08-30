@@ -7,6 +7,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "device_connection.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -14,6 +15,7 @@
 #include "network_connectivity.h"
 #include "nvs_flash.h"
 #include "terminal_ui.h"
+#include "terminal_interaction.h"
 
 #define TERMINAL_EVENT_QUEUE_LENGTH 16U
 #define TERMINAL_LIFECYCLE_TASK_STACK_BYTES 4096U
@@ -37,6 +39,7 @@ static QueueHandle_t terminal_event_queue;
 static network_connectivity_t *terminal_network_connectivity;
 static device_connection_t *terminal_device_connection;
 static device_identity_t *terminal_device_identity;
+static terminal_interaction_t *terminal_interaction;
 static terminal_ui_t *terminal_user_interface;
 static uint32_t terminal_event_drop_count;
 static uint32_t terminal_device_network_update_error_count;
@@ -424,6 +427,48 @@ static void terminal_storage_initialize(void)
     ESP_ERROR_CHECK(result);
 }
 
+static void terminal_boot_interaction_milestone(
+    terminal_interaction_boot_milestone_t milestone,
+    void *context)
+{
+    (void)context;
+    if (milestone == TERMINAL_INTERACTION_BOOT_MILESTONE_PAIRING_RESET_ARMED) {
+        terminal_ui_project(
+            TERMINAL_UI_STATE_PAIRING_RESET_ARMED,
+            TERMINAL_UI_ERROR_NONE);
+    }
+}
+
+static bool terminal_boot_pairing_reset_evaluate(void)
+{
+    ESP_ERROR_CHECK(
+        terminal_interaction_create(&terminal_interaction) ==
+                TERMINAL_INTERACTION_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+    terminal_interaction_boot_action_t action = TERMINAL_INTERACTION_BOOT_ACTION_NONE;
+    ESP_ERROR_CHECK(
+        terminal_interaction_evaluate_boot_action(
+            terminal_interaction,
+            terminal_boot_interaction_milestone,
+            NULL,
+            &action) == TERMINAL_INTERACTION_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+    if (action != TERMINAL_INTERACTION_BOOT_ACTION_CLEAR_PAIRING) {
+        return false;
+    }
+    if (device_identity_clear_all(terminal_device_identity) != DEVICE_IDENTITY_RESULT_OK) {
+        ESP_LOGE(TAG, "event=pairing_reset_failed reason=identity_storage");
+        terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_IDENTITY);
+        return true;
+    }
+    ESP_LOGI(TAG, "event=pairing_reset_completed restart=true");
+    vTaskDelay(pdMS_TO_TICKS(250U));
+    esp_restart();
+    return true;
+}
+
 void app_main(void)
 {
     terminal_storage_initialize();
@@ -438,6 +483,13 @@ void app_main(void)
         terminal_ui_start(terminal_user_interface) == TERMINAL_UI_RESULT_OK
             ? ESP_OK
             : ESP_FAIL);
+    ESP_ERROR_CHECK(
+        device_identity_open(&terminal_device_identity) == DEVICE_IDENTITY_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+    if (terminal_boot_pairing_reset_evaluate()) {
+        return;
+    }
 
     terminal_event_queue = xQueueCreate(
         TERMINAL_EVENT_QUEUE_LENGTH,
@@ -455,10 +507,6 @@ void app_main(void)
             ? ESP_OK
             : ESP_ERR_NO_MEM);
 
-    ESP_ERROR_CHECK(
-        device_identity_open(&terminal_device_identity) == DEVICE_IDENTITY_RESULT_OK
-            ? ESP_OK
-            : ESP_FAIL);
     device_connection_identity_t connection_identity = {0};
     const bool identity_loaded = terminal_identity_load(&connection_identity);
     if (identity_loaded) {

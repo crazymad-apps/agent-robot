@@ -203,6 +203,11 @@ static void projection_apply(
             detail = "ACTION REQUIRED";
             color = 0xFFB84D;
             break;
+        case TERMINAL_UI_STATE_PAIRING_RESET_ARMED:
+            state = "RELEASE TO RESET";
+            detail = "PAIRING WILL BE CLEARED";
+            color = 0xFFB84D;
+            break;
         case TERMINAL_UI_STATE_ERROR:
             state = "ERROR";
             detail = error_detail(projection->error);

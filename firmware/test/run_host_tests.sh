@@ -168,6 +168,18 @@ done < <(jq -r '.invalid_header_hex[]' "$FIXTURE")
 "$BUILD_DIR/device_connection_supervisor_test"
 "$BUILD_DIR/network_reconnect_policy_test"
 
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$FIRMWARE_DIR/components/interaction/private_include" \
+    "$FIRMWARE_DIR/components/interaction/terminal_interaction_policy.c" \
+    "$FIRMWARE_DIR/test/host/terminal_interaction_policy_test.c" \
+    -o "$BUILD_DIR/terminal_interaction_policy_test"
+
+"$BUILD_DIR/terminal_interaction_policy_test"
+
 CRYPTO_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/crypto-v1.json"
 "$BUILD_DIR/device_base64url_test" \
     "$(jq -r '.pairing.associated_data' "$CRYPTO_FIXTURE")" 235 \

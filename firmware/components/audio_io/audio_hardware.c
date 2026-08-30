@@ -193,9 +193,6 @@ audio_hardware_result_t audio_hardware_playback_start(audio_hardware_t *hardware
     if (result == ESP_OK) {
         result = i2s_channel_enable(hardware->transmit_channel);
     }
-    if (result == ESP_OK) {
-        result = gpio_set_level(AGENT_ROBOT_BOARD_AMPLIFIER_ENABLE_GPIO, 1);
-    }
     if (result != ESP_OK) {
         (void)gpio_set_level(AGENT_ROBOT_BOARD_AMPLIFIER_ENABLE_GPIO, 0);
         (void)i2s_channel_disable(hardware->transmit_channel);
@@ -203,6 +200,25 @@ audio_hardware_result_t audio_hardware_playback_start(audio_hardware_t *hardware
     }
     hardware->playback_enabled = true;
     return AUDIO_HARDWARE_RESULT_OK;
+}
+
+audio_hardware_result_t audio_hardware_playback_unmute(audio_hardware_t *hardware)
+{
+    if (hardware == NULL) {
+        return AUDIO_HARDWARE_RESULT_INVALID_ARGUMENT;
+    }
+    if (!hardware->playback_enabled) {
+        return AUDIO_HARDWARE_RESULT_INVALID_STATE;
+    }
+    return driver_result(gpio_set_level(AGENT_ROBOT_BOARD_AMPLIFIER_ENABLE_GPIO, 1));
+}
+
+audio_hardware_result_t audio_hardware_playback_mute(audio_hardware_t *hardware)
+{
+    if (hardware == NULL) {
+        return AUDIO_HARDWARE_RESULT_INVALID_ARGUMENT;
+    }
+    return driver_result(gpio_set_level(AGENT_ROBOT_BOARD_AMPLIFIER_ENABLE_GPIO, 0));
 }
 
 audio_hardware_result_t audio_hardware_playback_write(audio_hardware_t *hardware,

@@ -26,6 +26,10 @@ audio_hardware_result_t audio_hardware_capture_stop(audio_hardware_t *hardware);
 
 audio_hardware_result_t audio_hardware_playback_start(audio_hardware_t *hardware);
 
+audio_hardware_result_t audio_hardware_playback_unmute(audio_hardware_t *hardware);
+
+audio_hardware_result_t audio_hardware_playback_mute(audio_hardware_t *hardware);
+
 audio_hardware_result_t audio_hardware_playback_write(audio_hardware_t *hardware,
                                                       const int32_t *i2s_words,
                                                       size_t i2s_word_count, uint32_t timeout_ms);

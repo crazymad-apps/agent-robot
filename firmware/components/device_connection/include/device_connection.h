@@ -4,10 +4,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "device_authentication.h"
 #include "device_capabilities.h"
 #include "device_connection_supervisor.h"
 #include "device_identity.h"
+#include "device_media_control.h"
 #include "device_pairing.h"
+#include "device_pcm_frame.h"
 #include "device_protocol_limits.h"
 #include "host_discovery.h"
 #include "wss_transport.h"
@@ -57,6 +60,36 @@ typedef void (*device_connection_event_callback_t)(
     const device_connection_event_t *event,
     void *context);
 
+typedef enum {
+    DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED = 0,
+    DEVICE_CONNECTION_MEDIA_EVENT_STATE_CHANGED,
+    DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_START,
+    DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_END,
+    DEVICE_CONNECTION_MEDIA_EVENT_PCM_FRAME,
+    DEVICE_CONNECTION_MEDIA_EVENT_REMOTE_ERROR,
+} device_connection_media_event_type_t;
+
+typedef struct {
+    device_connection_media_event_type_t type;
+    uint64_t connection_epoch;
+    union {
+        device_media_input_accepted_t input_accepted;
+        device_media_state_changed_t state_changed;
+        device_media_playback_start_t playback_start;
+        device_media_playback_end_t playback_end;
+        device_pcm_frame_view_t pcm_frame;
+        device_authentication_error_t remote_error;
+    } value;
+} device_connection_media_event_t;
+
+/*
+ * Runs synchronously on the Network task and must not block. PCM payload
+ * storage remains valid only for the duration of the callback.
+ */
+typedef bool (*device_connection_media_callback_t)(
+    const device_connection_media_event_t *event,
+    void *context);
+
 typedef struct {
     device_connection_identity_t identity;
     device_identity_t *identity_store;
@@ -66,6 +99,8 @@ typedef struct {
     const char *display_name;
     device_connection_event_callback_t event_callback;
     void *event_context;
+    device_connection_media_callback_t media_callback;
+    void *media_context;
 } device_connection_config_t;
 
 typedef struct {
@@ -78,6 +113,7 @@ typedef struct {
     uint32_t discovery_attempt_count;
     uint32_t transport_attempt_count;
     uint32_t control_message_count;
+    uint32_t pcm_frame_count;
     device_pairing_state_t pairing_state;
 } device_connection_status_t;
 

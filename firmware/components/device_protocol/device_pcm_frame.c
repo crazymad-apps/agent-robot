@@ -62,6 +62,7 @@ device_protocol_result_t device_pcm_frame_decode(
     }
     if (frame_size != DEVICE_PCM_FRAME_BYTES || frame[0] != DEVICE_PCM_PROTOCOL_VERSION
         || frame[1] != (uint8_t)expected_direction || frame[2] != 0U || frame[3] != 0U
+        || read_u32_be(&frame[4]) == 0U
         || frame[12] != (uint8_t)(DEVICE_PCM_PAYLOAD_BYTES >> 8U)
         || frame[13] != (uint8_t)DEVICE_PCM_PAYLOAD_BYTES || frame[14] != 0U || frame[15] != 0U) {
         return DEVICE_PROTOCOL_RESULT_INVALID_PCM_FRAME;

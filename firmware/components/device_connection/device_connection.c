@@ -9,8 +9,10 @@
 #include "device_control_envelope.h"
 #include "device_hardware_random.h"
 #include "device_identity.h"
+#include "device_media_control.h"
 #include "device_message_replay_window.h"
 #include "device_pairing.h"
+#include "device_pcm_frame.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -52,6 +54,8 @@ struct device_connection {
     device_connection_inputs_t inputs;
     device_connection_event_callback_t event_callback;
     void *event_context;
+    device_connection_media_callback_t media_callback;
+    void *media_context;
     device_identity_t *identity_store;
     device_capabilities_t capabilities;
     device_output_preference_t output_preference;
@@ -207,6 +211,14 @@ static void emit_state_changed(device_connection_t *connection)
         WSS_TRANSPORT_RESULT_OK,
         NULL,
         NULL);
+}
+
+static bool emit_media_event(
+    device_connection_t *connection,
+    const device_connection_media_event_t *event)
+{
+    return connection->media_callback == NULL ||
+           connection->media_callback(event, connection->media_context);
 }
 
 static bool copy_transport_endpoint(
@@ -968,6 +980,66 @@ static void online_control_handle(
             record_failure(connection, transport_failure(send_result), send_result);
             return;
         }
+    } else if (strcmp(message_type, "input_accepted") == 0) {
+        device_connection_media_event_t event = {
+            .type = DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED,
+            .connection_epoch = connection->supervisor.connection_epoch,
+        };
+        if (device_media_control_decode_input_accepted(
+                envelope,
+                &event.value.input_accepted) != DEVICE_PROTOCOL_RESULT_OK ||
+            !emit_media_event(connection, &event)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+    } else if (strcmp(message_type, "state_changed") == 0) {
+        device_connection_media_event_t event = {
+            .type = DEVICE_CONNECTION_MEDIA_EVENT_STATE_CHANGED,
+            .connection_epoch = connection->supervisor.connection_epoch,
+        };
+        if (device_media_control_decode_state_changed(
+                envelope,
+                &event.value.state_changed) != DEVICE_PROTOCOL_RESULT_OK ||
+            !emit_media_event(connection, &event)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+    } else if (strcmp(message_type, "playback_start") == 0) {
+        device_connection_media_event_t event = {
+            .type = DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_START,
+            .connection_epoch = connection->supervisor.connection_epoch,
+        };
+        if (device_media_control_decode_playback_start(
+                envelope,
+                &event.value.playback_start) != DEVICE_PROTOCOL_RESULT_OK ||
+            !emit_media_event(connection, &event)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+    } else if (strcmp(message_type, "playback_end") == 0) {
+        device_connection_media_event_t event = {
+            .type = DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_END,
+            .connection_epoch = connection->supervisor.connection_epoch,
+        };
+        if (device_media_control_decode_playback_end(
+                envelope,
+                &event.value.playback_end) != DEVICE_PROTOCOL_RESULT_OK ||
+            !emit_media_event(connection, &event)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
     } else if (strcmp(message_type, "error") == 0) {
         device_authentication_error_t error = {0};
         if (device_authentication_decode_error(envelope, &error) !=
@@ -978,11 +1050,69 @@ static void online_control_handle(
                 WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
             return;
         }
+        const device_connection_media_event_t event = {
+            .type = DEVICE_CONNECTION_MEDIA_EVENT_REMOTE_ERROR,
+            .connection_epoch = connection->supervisor.connection_epoch,
+            .value.remote_error = error,
+        };
+        if (!emit_media_event(connection, &event)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
         if (strcmp(error.code, "device_revoked") == 0 && !error.recoverable) {
             clear_credential_and_discover(connection);
             return;
         }
+        if (!error.recoverable) {
+            const bool service_interruption =
+                strcmp(error.code, "gateway_disabled") == 0 ||
+                strcmp(error.code, "connection_replaced") == 0;
+            record_failure(
+                connection,
+                service_interruption ? DEVICE_CONNECTION_FAILURE_TRANSIENT
+                                     : DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+    } else {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
     }
+    (void)device_connection_supervisor_receive_activity(
+        &connection->supervisor,
+        connection->supervisor.connection_epoch,
+        monotonic_ms());
+}
+
+static void online_pcm_handle(
+    device_connection_t *connection,
+    size_t payload_length)
+{
+    device_connection_media_event_t event = {
+        .type = DEVICE_CONNECTION_MEDIA_EVENT_PCM_FRAME,
+        .connection_epoch = connection->supervisor.connection_epoch,
+    };
+    if (device_pcm_frame_decode(
+            connection->receive_payload,
+            payload_length,
+            DEVICE_PCM_DIRECTION_DOWNLINK,
+            &event.value.pcm_frame) != DEVICE_PROTOCOL_RESULT_OK ||
+        !emit_media_event(connection, &event)) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    taskENTER_CRITICAL(&connection->input_lock);
+    ++connection->status.pcm_frame_count;
+    taskEXIT_CRITICAL(&connection->input_lock);
     (void)device_connection_supervisor_receive_activity(
         &connection->supervisor,
         connection->supervisor.connection_epoch,
@@ -1052,6 +1182,17 @@ static void receive_transport_message(device_connection_t *connection)
                 DEVICE_CONNECTION_FAILURE_TRANSIENT,
                 WSS_TRANSPORT_RESULT_CONNECTION_CLOSED);
         }
+        return;
+    }
+    if (message.type == WSS_TRANSPORT_MESSAGE_BINARY) {
+        if (connection->supervisor.state != DEVICE_CONNECTION_STATE_ONLINE) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+        online_pcm_handle(connection, message.payload_length);
         return;
     }
     if (message.type != WSS_TRANSPORT_MESSAGE_TEXT) {
@@ -1275,6 +1416,8 @@ device_connection_result_t device_connection_create(
     (*connection)->identity = config->identity;
     (*connection)->event_callback = config->event_callback;
     (*connection)->event_context = config->event_context;
+    (*connection)->media_callback = config->media_callback;
+    (*connection)->media_context = config->media_context;
     (*connection)->identity_store = config->identity_store;
     (*connection)->capabilities = config->capabilities;
     (*connection)->output_preference = config->output_preference;

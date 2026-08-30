@@ -107,6 +107,24 @@ int main(int argument_count, char **arguments)
                sizeof(frame))
            == DEVICE_PROTOCOL_RESULT_INVALID_ARGUMENT);
 
+    assert(device_pcm_frame_encode(
+               DEVICE_PCM_DIRECTION_DOWNLINK,
+               stream_id,
+               sequence,
+               payload,
+               sizeof(payload),
+               frame,
+               sizeof(frame))
+           == DEVICE_PROTOCOL_RESULT_OK);
+    memset(&frame[4], 0, sizeof(uint32_t));
+    device_pcm_frame_view_t view = {0};
+    assert(device_pcm_frame_decode(
+               frame,
+               sizeof(frame),
+               DEVICE_PCM_DIRECTION_DOWNLINK,
+               &view)
+           == DEVICE_PROTOCOL_RESULT_INVALID_PCM_FRAME);
+
     puts("device PCM fixture and boundary checks passed");
     return 0;
 }

@@ -144,6 +144,20 @@ cc \
     -Wall \
     -Wextra \
     -Werror \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    -I"$FIRMWARE_DIR/components/utterance_cache/include" \
+    -I"$FIRMWARE_DIR/components/utterance_cache/private_include" \
+    "$FIRMWARE_DIR/components/utterance_cache/utterance_cache.c" \
+    "$FIRMWARE_DIR/test/host/utterance_cache_test.c" \
+    -o "$BUILD_DIR/utterance_cache_test"
+
+"$BUILD_DIR/utterance_cache_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
     -I"$FIRMWARE_DIR/components/device_crypto/include" \
     -I"$FIRMWARE_DIR/components/device_protocol/include" \
     "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \

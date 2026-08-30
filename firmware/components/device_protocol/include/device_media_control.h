@@ -6,13 +6,13 @@
 
 #include "device_capabilities.h"
 #include "device_control_envelope.h"
+#include "device_protocol_limits.h"
 #include "device_protocol_result.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define DEVICE_MEDIA_CLIENT_INPUT_ID_MAX_BYTES 256U
 #define DEVICE_MEDIA_OUTPUT_ID_MAX_BYTES 256U
 #define DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES 128U
 #define DEVICE_MEDIA_REASON_MAX_BYTES 128U
@@ -40,7 +40,7 @@ typedef enum {
 } device_media_interaction_state_t;
 
 typedef struct {
-    char client_input_id[DEVICE_MEDIA_CLIENT_INPUT_ID_MAX_BYTES + 1U];
+    char client_input_id[DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U];
     char input_id[DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES + 1U];
     char run_id[DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES + 1U];
     device_media_run_status_t queue_state;
@@ -50,7 +50,7 @@ typedef struct {
     bool has_run_id;
     char run_id[DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES + 1U];
     bool has_client_input_id;
-    char client_input_id[DEVICE_MEDIA_CLIENT_INPUT_ID_MAX_BYTES + 1U];
+    char client_input_id[DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U];
     device_media_interaction_state_t state;
     bool has_reason;
     char reason[DEVICE_MEDIA_REASON_MAX_BYTES + 1U];

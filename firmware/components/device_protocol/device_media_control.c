@@ -217,7 +217,7 @@ device_protocol_result_t device_media_control_encode_listen_start(
     size_t *encoded_size)
 {
     const char *preference = output_preference_name(output_preference);
-    if (!identifier_is_valid(client_input_id, DEVICE_MEDIA_CLIENT_INPUT_ID_MAX_BYTES) ||
+    if (!identifier_is_valid(client_input_id, DEVICE_CLIENT_INPUT_ID_MAX_BYTES) ||
         stream_id == 0U || preference == NULL) {
         return DEVICE_PROTOCOL_RESULT_INVALID_ARGUMENT;
     }
@@ -309,8 +309,7 @@ device_media_control_decode_input_accepted(const device_control_envelope_t *enve
     const cJSON *payload = device_control_envelope_payload(envelope);
     if (!payload_has_exact_fields(payload, fields, sizeof(fields) / sizeof(fields[0])) ||
         !copy_required_identifier(cJSON_GetObjectItemCaseSensitive(payload, "client_input_id"),
-                                  accepted->client_input_id,
-                                  DEVICE_MEDIA_CLIENT_INPUT_ID_MAX_BYTES) ||
+                                  accepted->client_input_id, DEVICE_CLIENT_INPUT_ID_MAX_BYTES) ||
         !copy_required_identifier(cJSON_GetObjectItemCaseSensitive(payload, "input_id"),
                                   accepted->input_id, DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES) ||
         !copy_required_identifier(cJSON_GetObjectItemCaseSensitive(payload, "run_id"),
@@ -340,8 +339,7 @@ device_media_control_decode_state_changed(const device_control_envelope_t *envel
                                   state_changed->run_id, DEVICE_MEDIA_RUNTIME_ID_MAX_BYTES,
                                   &state_changed->has_run_id) ||
         !copy_optional_identifier(cJSON_GetObjectItemCaseSensitive(payload, "client_input_id"),
-                                  state_changed->client_input_id,
-                                  DEVICE_MEDIA_CLIENT_INPUT_ID_MAX_BYTES,
+                                  state_changed->client_input_id, DEVICE_CLIENT_INPUT_ID_MAX_BYTES,
                                   &state_changed->has_client_input_id) ||
         !interaction_state_parse(cJSON_GetObjectItemCaseSensitive(payload, "state"),
                                  &state_changed->state) ||

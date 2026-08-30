@@ -6,8 +6,10 @@
 #include "device_authentication.h"
 #include "device_base64url.h"
 #include "device_control_envelope.h"
+#include "device_hardware_random.h"
 #include "device_identity.h"
 #include "device_message_replay_window.h"
+#include "device_pairing.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -27,6 +29,7 @@
 #define DEVICE_CONNECTION_MESSAGE_RANDOM_BYTES 18U
 #define DEVICE_CONNECTION_MESSAGE_ID_BYTES 24U
 #define DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES 2048U
+#define DEVICE_CONNECTION_PAIRING_VALIDITY_MS 300000U
 
 typedef struct {
     bool hello_sent;
@@ -40,6 +43,7 @@ typedef struct {
     uint64_t identity_revision;
     bool stop_requested;
     device_connection_identity_t identity;
+    char pairing_code[DEVICE_PAIRING_CODE_CAPACITY];
 } device_connection_inputs_t;
 
 struct device_connection {
@@ -65,7 +69,13 @@ struct device_connection {
     device_connection_identity_t identity;
     device_message_replay_window_t *replay_window;
     device_connection_authentication_t authentication;
+    device_pairing_t *pairing;
+    char *pairing_first_outbound;
+    char *pairing_second_outbound;
+    uint64_t pairing_deadline_ms;
 };
+
+static bool pairing_connection_lost(device_connection_t *connection);
 
 static uint64_t monotonic_ms(void)
 {
@@ -122,6 +132,9 @@ static void emit_event(
         .transport_result = transport_result,
         .network_ip_epoch = connection->observed_ip_epoch,
         .connection_epoch = connection->supervisor.connection_epoch,
+        .pairing_state = connection->pairing == NULL
+                             ? DEVICE_PAIRING_STATE_READY
+                             : device_pairing_state(connection->pairing),
     };
     if (connection->supervisor.state == DEVICE_CONNECTION_STATE_BACKOFF) {
         const uint64_t now_ms = monotonic_ms();
@@ -147,6 +160,38 @@ static void emit_event(
         strncpy(event.message_type, message_type, sizeof(event.message_type) - 1U);
     }
     connection->event_callback(&event, connection->event_context);
+}
+
+static void pairing_state_publish(
+    device_connection_t *connection,
+    bool pairing_code_changed)
+{
+    if (connection->pairing == NULL) {
+        return;
+    }
+    const device_pairing_state_t state = device_pairing_state(connection->pairing);
+    bool state_changed = false;
+    taskENTER_CRITICAL(&connection->input_lock);
+    if (connection->status.pairing_state != state) {
+        connection->status.pairing_state = state;
+        state_changed = true;
+    }
+    if (pairing_code_changed) {
+        (void)device_pairing_copy_code(
+            connection->pairing,
+            connection->inputs.pairing_code);
+    }
+    taskEXIT_CRITICAL(&connection->input_lock);
+    if (state_changed || pairing_code_changed) {
+        emit_event(
+            connection,
+            DEVICE_CONNECTION_EVENT_PAIRING_STATE_CHANGED,
+            DEVICE_CONNECTION_FAILURE_TRANSIENT,
+            HOST_SELECTION_NOT_FOUND,
+            WSS_TRANSPORT_RESULT_OK,
+            NULL,
+            NULL);
+    }
 }
 
 static void emit_state_changed(device_connection_t *connection)
@@ -249,9 +294,11 @@ static void synchronize_inputs(device_connection_t *connection)
         inputs.identity_revision != connection->observed_identity_revision;
     const bool network_changed =
         inputs.network_ip_epoch != connection->observed_ip_epoch;
-    if ((!inputs.network_has_ip || network_changed || identity_changed) &&
-        wss_transport_is_connected(connection->transport)) {
-        wss_transport_disconnect(connection->transport);
+    if (!inputs.network_has_ip || network_changed || identity_changed) {
+        (void)pairing_connection_lost(connection);
+        if (wss_transport_is_connected(connection->transport)) {
+            wss_transport_disconnect(connection->transport);
+        }
     }
     if (!inputs.network_has_ip) {
         if (connection->supervisor.wifi_has_ip) {
@@ -376,10 +423,13 @@ static void connect_transport(device_connection_t *connection)
         DEVICE_CONNECTION_TLS_TIMEOUT_MS,
         DEVICE_CONNECTION_UPGRADE_TIMEOUT_MS);
     if (result == WSS_TRANSPORT_RESULT_CANCELLED || transport_cancelled(connection)) {
+        (void)pairing_connection_lost(connection);
         return;
     }
     if (result != WSS_TRANSPORT_RESULT_OK) {
-        record_failure(connection, transport_failure(result), result);
+        if (!pairing_connection_lost(connection)) {
+            record_failure(connection, transport_failure(result), result);
+        }
         return;
     }
     memset(&connection->authentication, 0, sizeof(connection->authentication));
@@ -435,6 +485,130 @@ static bool authentication_identity_load(
         return false;
     }
     return true;
+}
+
+static device_connection_failure_t pairing_failure_type(
+    device_pairing_result_t result)
+{
+    switch (result) {
+        case DEVICE_PAIRING_RESULT_STORAGE_ERROR:
+        case DEVICE_PAIRING_RESULT_CRYPTOGRAPHY_FAILED:
+            return DEVICE_CONNECTION_FAILURE_IDENTITY;
+        case DEVICE_PAIRING_RESULT_NO_MEMORY:
+            return DEVICE_CONNECTION_FAILURE_TRANSIENT;
+        default:
+            return DEVICE_CONNECTION_FAILURE_PROTOCOL;
+    }
+}
+
+static bool pending_identity_adopt(device_connection_t *connection)
+{
+    if (connection->pairing == NULL || connection->identity_store == NULL ||
+        device_pairing_state(connection->pairing) !=
+            DEVICE_PAIRING_STATE_WAITING_FOR_COMPLETE) {
+        return false;
+    }
+    device_identity_record_t record = {0};
+    if (device_identity_load(connection->identity_store, &record) !=
+            DEVICE_IDENTITY_RESULT_OK ||
+        record.state != DEVICE_IDENTITY_STATE_PENDING) {
+        memset(&record, 0, sizeof(record));
+        return false;
+    }
+    device_connection_identity_t identity = {.paired = true};
+    memcpy(
+        identity.installation_id,
+        record.host_installation_id,
+        sizeof(identity.installation_id));
+    memcpy(
+        identity.certificate_fingerprint,
+        record.host_certificate_fingerprint,
+        sizeof(identity.certificate_fingerprint));
+    memset(&record, 0, sizeof(record));
+    return device_connection_update_identity(connection, &identity) ==
+           DEVICE_CONNECTION_RESULT_OK;
+}
+
+static bool pairing_connection_lost(device_connection_t *connection)
+{
+    if (connection->identity.paired || connection->pairing == NULL) {
+        return false;
+    }
+    if (pending_identity_adopt(connection)) {
+        return true;
+    }
+    const uint64_t now_ms = monotonic_ms();
+    const bool attempt_still_valid = connection->pairing_deadline_ms > now_ms;
+    device_pairing_transition_t transition;
+    (void)device_pairing_connection_lost(
+        connection->pairing,
+        attempt_still_valid,
+        &transition);
+    if (transition.attempt_reset) {
+        connection->pairing_deadline_ms = 0U;
+    }
+    pairing_state_publish(connection, transition.pairing_code_rotated);
+    return false;
+}
+
+static void pairing_challenge_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    if (connection->pairing == NULL) {
+        return;
+    }
+    if (connection->pairing_first_outbound == NULL) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    device_authentication_challenge_t challenge = {0};
+    if (device_authentication_decode_challenge(envelope, &challenge) !=
+        DEVICE_AUTHENTICATION_RESULT_OK) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    memset(&challenge, 0, sizeof(challenge));
+    if (connection->pairing_deadline_ms != 0U &&
+        connection->pairing_deadline_ms <= monotonic_ms()) {
+        device_pairing_transition_t transition;
+        (void)device_pairing_connection_lost(connection->pairing, false, &transition);
+        connection->pairing_deadline_ms = 0U;
+        pairing_state_publish(connection, transition.pairing_code_rotated);
+    }
+    size_t encoded_size = 0U;
+    const device_pairing_result_t pairing_result = device_pairing_begin(
+        connection->pairing,
+        &connection->cached_host,
+        connection->pairing_first_outbound,
+        DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES,
+        &encoded_size);
+    if (pairing_result != DEVICE_PAIRING_RESULT_OK) {
+        record_failure(
+            connection,
+            pairing_failure_type(pairing_result),
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    pairing_state_publish(connection, false);
+    const wss_transport_result_t send_result = wss_transport_send_text(
+        connection->transport,
+        (const uint8_t *)connection->pairing_first_outbound,
+        encoded_size,
+        DEVICE_CONNECTION_SEND_TIMEOUT_MS);
+    memset(
+        connection->pairing_first_outbound,
+        0,
+        DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES);
+    if (send_result != WSS_TRANSPORT_RESULT_OK && !pairing_connection_lost(connection)) {
+        record_failure(connection, transport_failure(send_result), send_result);
+    }
 }
 
 static void authentication_challenge_handle(
@@ -572,12 +746,133 @@ static void clear_credential_and_discover(device_connection_t *connection)
             WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
         return;
     }
+    if (connection->pairing != NULL) {
+        if (device_pairing_force_new_code(connection->pairing) !=
+            DEVICE_PAIRING_RESULT_OK) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_IDENTITY,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+        connection->pairing_deadline_ms = 0U;
+        pairing_state_publish(connection, true);
+    }
     const device_connection_identity_t unpaired_identity = {0};
     if (device_connection_update_identity(connection, &unpaired_identity) !=
         DEVICE_CONNECTION_RESULT_OK) {
         record_failure(
             connection,
             DEVICE_CONNECTION_FAILURE_IDENTITY,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+    }
+}
+
+static void pairing_control_handle(
+    device_connection_t *connection,
+    const device_control_envelope_t *envelope)
+{
+    if (connection->pairing == NULL || connection->pairing_first_outbound == NULL ||
+        connection->pairing_second_outbound == NULL) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_PROTOCOL,
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    device_pairing_transition_t transition;
+    const device_pairing_result_t pairing_result = device_pairing_handle_control(
+        connection->pairing,
+        envelope,
+        connection->pairing_first_outbound,
+        DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES,
+        connection->pairing_second_outbound,
+        DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES,
+        &transition);
+    if (device_pairing_state(connection->pairing) ==
+        DEVICE_PAIRING_STATE_WAITING_FOR_APPROVAL) {
+        connection->pairing_deadline_ms = monotonic_ms() +
+                                          DEVICE_CONNECTION_PAIRING_VALIDITY_MS;
+    } else if (device_pairing_state(connection->pairing) >=
+               DEVICE_PAIRING_STATE_WAITING_FOR_BIND_ACK) {
+        connection->pairing_deadline_ms = 0U;
+    }
+    pairing_state_publish(connection, transition.pairing_code_rotated);
+    if (pairing_result != DEVICE_PAIRING_RESULT_OK) {
+        if (transition.pending_credential_saved && pending_identity_adopt(connection)) {
+            return;
+        }
+        record_failure(
+            connection,
+            pairing_failure_type(pairing_result),
+            WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        return;
+    }
+    for (size_t index = 0U; index < transition.message_count; ++index) {
+        char *outbound = index == 0U ? connection->pairing_first_outbound
+                                    : connection->pairing_second_outbound;
+        const wss_transport_result_t send_result = wss_transport_send_text(
+            connection->transport,
+            (const uint8_t *)outbound,
+            transition.message_sizes[index],
+            DEVICE_CONNECTION_SEND_TIMEOUT_MS);
+        if (send_result != WSS_TRANSPORT_RESULT_OK) {
+            memset(
+                connection->pairing_first_outbound,
+                0,
+                DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES);
+            memset(
+                connection->pairing_second_outbound,
+                0,
+                DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES);
+            if (!pairing_connection_lost(connection)) {
+                record_failure(connection, transport_failure(send_result), send_result);
+            }
+            return;
+        }
+    }
+    memset(
+        connection->pairing_first_outbound,
+        0,
+        DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES);
+    memset(
+        connection->pairing_second_outbound,
+        0,
+        DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES);
+    if (transition.identity_activated) {
+        device_identity_record_t record = {0};
+        if (device_pairing_copy_identity(connection->pairing, &record) !=
+            DEVICE_PAIRING_RESULT_OK) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_IDENTITY,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return;
+        }
+        device_connection_identity_t identity = {.paired = true};
+        memcpy(
+            identity.installation_id,
+            record.host_installation_id,
+            sizeof(identity.installation_id));
+        memcpy(
+            identity.certificate_fingerprint,
+            record.host_certificate_fingerprint,
+            sizeof(identity.certificate_fingerprint));
+        memset(&record, 0, sizeof(record));
+        if (device_connection_update_identity(connection, &identity) !=
+            DEVICE_CONNECTION_RESULT_OK) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_IDENTITY,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+        }
+        return;
+    }
+    if (transition.attempt_reset) {
+        connection->pairing_deadline_ms = 0U;
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_SERVICE_UNAVAILABLE,
             WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
     }
 }
@@ -657,7 +952,13 @@ static void authentication_control_handle(
     if (strcmp(message_type, "auth_challenge") == 0) {
         if (connection->identity.paired && connection->identity_store != NULL) {
             authentication_challenge_handle(connection, envelope);
+        } else {
+            pairing_challenge_handle(connection, envelope);
         }
+        return;
+    }
+    if (!connection->identity.paired) {
+        pairing_control_handle(connection, envelope);
         return;
     }
     if (strcmp(message_type, "hello_ack") == 0) {
@@ -686,10 +987,13 @@ static void receive_transport_message(device_connection_t *connection)
         &message,
         DEVICE_CONNECTION_RECEIVE_TIMEOUT_MS);
     if (result == WSS_TRANSPORT_RESULT_CANCELLED || transport_cancelled(connection)) {
+        (void)pairing_connection_lost(connection);
         return;
     }
     if (result != WSS_TRANSPORT_RESULT_OK) {
-        record_failure(connection, transport_failure(result), result);
+        if (!pairing_connection_lost(connection)) {
+            record_failure(connection, transport_failure(result), result);
+        }
         return;
     }
     if (message.type == WSS_TRANSPORT_MESSAGE_PING ||
@@ -697,10 +1001,12 @@ static void receive_transport_message(device_connection_t *connection)
         return;
     }
     if (message.type == WSS_TRANSPORT_MESSAGE_CLOSE) {
-        record_failure(
-            connection,
-            DEVICE_CONNECTION_FAILURE_TRANSIENT,
-            WSS_TRANSPORT_RESULT_CONNECTION_CLOSED);
+        if (!pairing_connection_lost(connection)) {
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_TRANSIENT,
+                WSS_TRANSPORT_RESULT_CONNECTION_CLOSED);
+        }
         return;
     }
     if (message.type != WSS_TRANSPORT_MESSAGE_TEXT) {
@@ -776,10 +1082,21 @@ static void device_connection_task(void *context)
     connection->replay_window = heap_caps_malloc(
         sizeof(device_message_replay_window_t),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (connection->pairing != NULL) {
+        connection->pairing_first_outbound = heap_caps_malloc(
+            DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        connection->pairing_second_outbound = heap_caps_malloc(
+            DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
     const bool resources_ready = discovery_result == HOST_DISCOVERY_RESULT_OK &&
                                  transport_result == WSS_TRANSPORT_RESULT_OK &&
                                  connection->receive_payload != NULL &&
-                                 connection->replay_window != NULL;
+                                 connection->replay_window != NULL &&
+                                 (connection->pairing == NULL ||
+                                  (connection->pairing_first_outbound != NULL &&
+                                   connection->pairing_second_outbound != NULL));
     if (!resources_ready) {
         connection->supervisor.state = DEVICE_CONNECTION_STATE_BLOCKED;
         connection->supervisor.block_reason = DEVICE_CONNECTION_BLOCK_PROTOCOL;
@@ -796,6 +1113,7 @@ static void device_connection_task(void *context)
             connection->transport,
             transport_cancelled,
             connection);
+        pairing_state_publish(connection, true);
     }
 
     while (!resources_ready) {
@@ -857,6 +1175,10 @@ static void device_connection_task(void *context)
     connection->receive_payload = NULL;
     free(connection->replay_window);
     connection->replay_window = NULL;
+    free(connection->pairing_first_outbound);
+    connection->pairing_first_outbound = NULL;
+    free(connection->pairing_second_outbound);
+    connection->pairing_second_outbound = NULL;
     if (discovery_result == HOST_DISCOVERY_RESULT_OK) {
         host_discovery_deinitialize();
     }
@@ -895,7 +1217,8 @@ device_connection_result_t device_connection_create(
     const device_connection_config_t *config,
     device_connection_t **connection)
 {
-    if (config == NULL || connection == NULL || !identity_valid(&config->identity)) {
+    if (config == NULL || connection == NULL || !identity_valid(&config->identity) ||
+        (config->identity_store != NULL && config->display_name == NULL)) {
         return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
     }
     *connection = calloc(1U, sizeof(device_connection_t));
@@ -910,10 +1233,32 @@ device_connection_result_t device_connection_create(
     (*connection)->identity_store = config->identity_store;
     (*connection)->capabilities = config->capabilities;
     (*connection)->output_preference = config->output_preference;
+    if (config->identity_store != NULL) {
+        const device_pairing_config_t pairing_config = {
+            .identity_store = config->identity_store,
+            .capabilities = config->capabilities,
+            .display_name = config->display_name,
+            .random_source = device_hardware_random_source(),
+        };
+        const device_pairing_result_t pairing_result = device_pairing_create(
+            &pairing_config,
+            &(*connection)->pairing);
+        if (pairing_result != DEVICE_PAIRING_RESULT_OK) {
+            free(*connection);
+            *connection = NULL;
+            return pairing_result == DEVICE_PAIRING_RESULT_NO_MEMORY
+                       ? DEVICE_CONNECTION_RESULT_NO_MEMORY
+                       : DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+        }
+        (void)device_pairing_copy_code(
+            (*connection)->pairing,
+            (*connection)->inputs.pairing_code);
+    }
     if (config->client_version != NULL) {
         const size_t client_version_length = strlen(config->client_version);
         if (client_version_length == 0U ||
             client_version_length > DEVICE_AUTHENTICATION_CLIENT_VERSION_MAX_BYTES) {
+            device_pairing_destroy((*connection)->pairing);
             free(*connection);
             *connection = NULL;
             return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
@@ -925,12 +1270,16 @@ device_connection_result_t device_connection_create(
     }
     (*connection)->lifecycle_events = xEventGroupCreate();
     if ((*connection)->lifecycle_events == NULL) {
+        device_pairing_destroy((*connection)->pairing);
         free(*connection);
         *connection = NULL;
         return DEVICE_CONNECTION_RESULT_NO_MEMORY;
     }
     device_connection_supervisor_initialize(&(*connection)->supervisor);
     (*connection)->status.state = DEVICE_CONNECTION_STATE_WIFI_DOWN;
+    (*connection)->status.pairing_state = (*connection)->pairing == NULL
+                                               ? DEVICE_PAIRING_STATE_READY
+                                               : device_pairing_state((*connection)->pairing);
     return DEVICE_CONNECTION_RESULT_OK;
 }
 
@@ -1013,6 +1362,25 @@ device_connection_result_t device_connection_update_identity(
     return DEVICE_CONNECTION_RESULT_OK;
 }
 
+device_connection_result_t device_connection_copy_pairing_code(
+    device_connection_t *connection,
+    char pairing_code[DEVICE_PAIRING_CODE_CAPACITY])
+{
+    if (connection == NULL || pairing_code == NULL) {
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    if (connection->pairing == NULL) {
+        return DEVICE_CONNECTION_RESULT_INVALID_STATE;
+    }
+    taskENTER_CRITICAL(&connection->input_lock);
+    memcpy(
+        pairing_code,
+        connection->inputs.pairing_code,
+        DEVICE_PAIRING_CODE_CAPACITY);
+    taskEXIT_CRITICAL(&connection->input_lock);
+    return DEVICE_CONNECTION_RESULT_OK;
+}
+
 void device_connection_get_status(
     device_connection_t *connection,
     device_connection_status_t *status)
@@ -1056,6 +1424,7 @@ void device_connection_destroy(device_connection_t *connection)
         return;
     }
     device_connection_stop(connection);
+    device_pairing_destroy(connection->pairing);
     vEventGroupDelete(connection->lifecycle_events);
     free(connection);
 }

@@ -241,6 +241,62 @@ cc \
     "$(jq -r '.authentication.public_key' "$CRYPTO_FIXTURE")" \
     "$(jq -r '.authentication.signature' "$CRYPTO_FIXTURE")"
 
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DCJSON_NESTING_LIMIT=64 \
+    -DCJSON_CIRCULAR_LIMIT=1000 \
+    -I"$FIRMWARE_DIR/components/device_pairing/include" \
+    -I"$FIRMWARE_DIR/components/device_crypto/include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    -I"$CJSON_DIR" \
+    "$CJSON_DIR/cJSON.c" \
+    "$FIRMWARE_DIR/components/device_pairing/device_pairing_protocol.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_control_envelope.c" \
+    "$FIRMWARE_DIR/test/host/device_pairing_protocol_test.c" \
+    -lm \
+    -o "$BUILD_DIR/device_pairing_protocol_test"
+
+"$BUILD_DIR/device_pairing_protocol_test"
+
+cc \
+    -std=c11 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -D_POSIX_C_SOURCE=200809L \
+    -DCJSON_NESTING_LIMIT=64 \
+    -DCJSON_CIRCULAR_LIMIT=1000 \
+    $MBEDCRYPTO_CFLAGS \
+    -I"$FIRMWARE_DIR/components/device_pairing/include" \
+    -I"$FIRMWARE_DIR/components/device_identity/include" \
+    -I"$FIRMWARE_DIR/components/device_crypto/include" \
+    -I"$FIRMWARE_DIR/components/device_crypto/third_party/monocypher" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    -I"$FIRMWARE_DIR/components/host_discovery/include" \
+    -I"$CJSON_DIR" \
+    "$CJSON_DIR/cJSON.c" \
+    "$FIRMWARE_DIR/components/device_pairing/device_pairing.c" \
+    "$FIRMWARE_DIR/components/device_pairing/device_pairing_protocol.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_base64url.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_ed25519.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_spake2.c" \
+    "$FIRMWARE_DIR/components/device_crypto/device_transcript.c" \
+    "$FIRMWARE_DIR/components/device_crypto/third_party/monocypher/monocypher.c" \
+    "$FIRMWARE_DIR/components/device_crypto/third_party/monocypher/monocypher-ed25519.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_capabilities.c" \
+    "$FIRMWARE_DIR/components/device_protocol/device_control_envelope.c" \
+    "$FIRMWARE_DIR/components/host_discovery/host_selection.c" \
+    "$FIRMWARE_DIR/test/host/device_pairing_state_test.c" \
+    $MBEDCRYPTO_LIBS \
+    -lm \
+    -o "$BUILD_DIR/device_pairing_state_test"
+
+"$BUILD_DIR/device_pairing_state_test"
+
 ENVELOPE_FIXTURE="$FIRMWARE_DIR/test/upstream/device-protocol-v1/envelope-v1.json"
 "$BUILD_DIR/device_control_envelope_test" "$(jq -c '.valid_envelope' "$ENVELOPE_FIXTURE")"
 

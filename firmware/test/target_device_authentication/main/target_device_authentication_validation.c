@@ -253,6 +253,7 @@ void app_main(void)
         },
         .output_preference = DEVICE_OUTPUT_PREFERENCE_AUDIO,
         .client_version = "authentication-validation",
+        .display_name = "Agent Robot Authentication Validation",
         .event_callback = connection_event_callback,
         .event_context = connection_events,
     };

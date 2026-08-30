@@ -7,6 +7,7 @@
 #include "device_capabilities.h"
 #include "device_connection_supervisor.h"
 #include "device_identity.h"
+#include "device_pairing.h"
 #include "device_protocol_limits.h"
 #include "host_discovery.h"
 #include "wss_transport.h"
@@ -31,6 +32,7 @@ typedef enum {
     DEVICE_CONNECTION_EVENT_HOST_SELECTED,
     DEVICE_CONNECTION_EVENT_CONTROL_RECEIVED,
     DEVICE_CONNECTION_EVENT_FAILURE,
+    DEVICE_CONNECTION_EVENT_PAIRING_STATE_CHANGED,
 } device_connection_event_type_t;
 
 typedef struct {
@@ -46,6 +48,7 @@ typedef struct {
     char installation_id_suffix[9U];
     char message_id[DEVICE_MESSAGE_ID_MAX_BYTES + 1U];
     char message_type[DEVICE_MESSAGE_TYPE_MAX_BYTES + 1U];
+    device_pairing_state_t pairing_state;
 } device_connection_event_t;
 
 /* Events run synchronously on the Network task and the callback must not block. */
@@ -59,6 +62,7 @@ typedef struct {
     device_capabilities_t capabilities;
     device_output_preference_t output_preference;
     const char *client_version;
+    const char *display_name;
     device_connection_event_callback_t event_callback;
     void *event_context;
 } device_connection_config_t;
@@ -73,6 +77,7 @@ typedef struct {
     uint32_t discovery_attempt_count;
     uint32_t transport_attempt_count;
     uint32_t control_message_count;
+    device_pairing_state_t pairing_state;
 } device_connection_status_t;
 
 device_connection_result_t device_connection_create(
@@ -89,6 +94,10 @@ device_connection_result_t device_connection_network_changed(
 device_connection_result_t device_connection_update_identity(
     device_connection_t *connection,
     const device_connection_identity_t *identity);
+
+device_connection_result_t device_connection_copy_pairing_code(
+    device_connection_t *connection,
+    char pairing_code[DEVICE_PAIRING_CODE_CAPACITY]);
 
 void device_connection_get_status(
     device_connection_t *connection,

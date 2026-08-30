@@ -147,6 +147,12 @@ static void terminal_device_connection_event_process(
             (unsigned int)event->block_reason,
             (unsigned long)event->reconnect_delay_ms,
             (unsigned long long)event->connection_epoch);
+    } else if (event->type == DEVICE_CONNECTION_EVENT_PAIRING_STATE_CHANGED) {
+        ESP_LOGI(
+            TAG,
+            "event=device_pairing_state_changed pairing_state=%u connection_epoch=%llu",
+            (unsigned int)event->pairing_state,
+            (unsigned long long)event->connection_epoch);
     } else {
         ESP_LOGI(
             TAG,
@@ -319,8 +325,8 @@ void app_main(void)
             ? ESP_OK
             : ESP_FAIL);
     device_connection_identity_t connection_identity = {0};
-    const bool identity_available = terminal_identity_load(&connection_identity);
-    if (identity_available) {
+    const bool identity_loaded = terminal_identity_load(&connection_identity);
+    if (identity_loaded) {
         const device_connection_config_t device_connection_config = {
             .identity = connection_identity,
             .identity_store = terminal_device_identity,
@@ -335,6 +341,7 @@ void app_main(void)
             },
             .output_preference = DEVICE_OUTPUT_PREFERENCE_AUDIO,
             .client_version = esp_app_get_description()->version,
+            .display_name = "Agent Robot Terminal",
             .event_callback = terminal_device_connection_event,
             .event_context = terminal_event_queue,
         };
@@ -369,5 +376,5 @@ void app_main(void)
     ESP_LOGI(
         TAG,
         "event=terminal_boot status=%s",
-        identity_available ? "connection_services_started" : "identity_recovery_required");
+        identity_loaded ? "connection_services_started" : "identity_recovery_required");
 }

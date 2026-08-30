@@ -76,6 +76,12 @@ void wss_transport_disconnect(wss_transport_t *transport);
 
 bool wss_transport_is_connected(const wss_transport_t *transport);
 
+/* Waits for encrypted or socket input without consuming a WebSocket frame. */
+wss_transport_result_t wss_transport_wait_readable(
+    wss_transport_t *transport,
+    uint32_t timeout_ms,
+    bool *readable);
+
 wss_transport_result_t wss_transport_send_text(
     wss_transport_t *transport,
     const uint8_t *payload,

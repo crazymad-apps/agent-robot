@@ -22,6 +22,7 @@ typedef enum {
     DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT,
     DEVICE_CONNECTION_RESULT_NO_MEMORY,
     DEVICE_CONNECTION_RESULT_INVALID_STATE,
+    DEVICE_CONNECTION_RESULT_CAPACITY_EXCEEDED,
 } device_connection_result_t;
 
 typedef struct {
@@ -114,6 +115,8 @@ typedef struct {
     uint32_t transport_attempt_count;
     uint32_t control_message_count;
     uint32_t pcm_frame_count;
+    uint32_t outbound_control_message_count;
+    uint32_t outbound_pcm_frame_count;
     device_pairing_state_t pairing_state;
 } device_connection_status_t;
 
@@ -135,6 +138,37 @@ device_connection_result_t device_connection_update_identity(
 device_connection_result_t device_connection_copy_pairing_code(
     device_connection_t *connection,
     char pairing_code[DEVICE_PAIRING_CODE_CAPACITY]);
+
+/* Outbound media is copied into the Network task queue without blocking. */
+device_connection_result_t device_connection_send_listen_start(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    const char *client_input_id,
+    uint32_t stream_id);
+
+device_connection_result_t device_connection_send_pcm(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    uint32_t stream_id,
+    uint32_t sequence,
+    const uint8_t pcm_payload[DEVICE_PCM_PAYLOAD_BYTES]);
+
+device_connection_result_t device_connection_send_listen_stop(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    uint32_t stream_id,
+    uint32_t last_sequence);
+
+device_connection_result_t device_connection_send_listen_cancel(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    uint32_t stream_id);
+
+device_connection_result_t device_connection_send_playback_cancel(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    const char *output_id,
+    uint32_t stream_id);
 
 void device_connection_get_status(
     device_connection_t *connection,

@@ -654,6 +654,32 @@ bool wss_transport_is_connected(const wss_transport_t *transport)
     return transport != NULL && transport->connected;
 }
 
+wss_transport_result_t wss_transport_wait_readable(
+    wss_transport_t *transport,
+    uint32_t timeout_ms,
+    bool *readable)
+{
+    if (transport == NULL || !transport->connected || timeout_ms == 0U || readable == NULL) {
+        return WSS_TRANSPORT_RESULT_INVALID_ARGUMENT;
+    }
+    if (transport->received_offset < transport->received_length ||
+        mbedtls_ssl_check_pending(&transport->tls) != 0) {
+        *readable = true;
+        return WSS_TRANSPORT_RESULT_OK;
+    }
+    const wss_transport_result_t result =
+        wait_for_socket(transport, false, deadline_after(timeout_ms));
+    if (result == WSS_TRANSPORT_RESULT_TIMEOUT) {
+        *readable = false;
+        return WSS_TRANSPORT_RESULT_OK;
+    }
+    if (result != WSS_TRANSPORT_RESULT_OK) {
+        return result;
+    }
+    *readable = true;
+    return WSS_TRANSPORT_RESULT_OK;
+}
+
 wss_transport_result_t wss_transport_send_text(
     wss_transport_t *transport,
     const uint8_t *payload,

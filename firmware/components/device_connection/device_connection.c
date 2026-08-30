@@ -1,5 +1,6 @@
 #include "device_connection.h"
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,6 +19,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 #define DEVICE_CONNECTION_TASK_STACK_BYTES 12288U
@@ -33,6 +35,40 @@
 #define DEVICE_CONNECTION_MESSAGE_ID_BYTES 24U
 #define DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES 2048U
 #define DEVICE_CONNECTION_PAIRING_VALIDITY_MS 300000U
+#define DEVICE_CONNECTION_ONLINE_POLL_MS 20U
+#define DEVICE_CONNECTION_OUTBOUND_QUEUE_LENGTH 64U
+#define DEVICE_CONNECTION_OUTBOUND_BURST 4U
+
+typedef enum {
+    DEVICE_CONNECTION_OUTBOUND_LISTEN_START = 0,
+    DEVICE_CONNECTION_OUTBOUND_PCM,
+    DEVICE_CONNECTION_OUTBOUND_LISTEN_STOP,
+    DEVICE_CONNECTION_OUTBOUND_LISTEN_CANCEL,
+    DEVICE_CONNECTION_OUTBOUND_PLAYBACK_CANCEL,
+} device_connection_outbound_type_t;
+
+typedef struct {
+    device_connection_outbound_type_t type;
+    uint64_t connection_epoch;
+    union {
+        struct {
+            char client_input_id[DEVICE_CLIENT_INPUT_ID_MAX_BYTES + 1U];
+            uint32_t stream_id;
+        } listen_start;
+        uint8_t pcm_frame[DEVICE_PCM_FRAME_BYTES];
+        struct {
+            uint32_t stream_id;
+            uint32_t last_sequence;
+        } listen_stop;
+        struct {
+            uint32_t stream_id;
+        } listen_cancel;
+        struct {
+            char output_id[DEVICE_MEDIA_OUTPUT_ID_MAX_BYTES + 1U];
+            uint32_t stream_id;
+        } playback_cancel;
+    } value;
+} device_connection_outbound_t;
 
 typedef struct {
     bool hello_sent;
@@ -62,6 +98,9 @@ struct device_connection {
     char client_version[DEVICE_AUTHENTICATION_CLIENT_VERSION_MAX_BYTES + 1U];
     TaskHandle_t task;
     EventGroupHandle_t lifecycle_events;
+    QueueHandle_t outbound_queue;
+    StaticQueue_t outbound_queue_state;
+    uint8_t *outbound_queue_storage;
     bool started;
     device_connection_status_t status;
     device_connection_supervisor_t supervisor;
@@ -81,6 +120,7 @@ struct device_connection {
 };
 
 static bool pairing_connection_lost(device_connection_t *connection);
+static void receive_transport_message(device_connection_t *connection);
 
 static uint64_t monotonic_ms(void)
 {
@@ -94,6 +134,45 @@ static device_connection_inputs_t input_snapshot(device_connection_t *connection
     snapshot = connection->inputs;
     taskEXIT_CRITICAL(&connection->input_lock);
     return snapshot;
+}
+
+static bool outbound_identifier_valid(const char *value, size_t maximum_size)
+{
+    if (value == NULL) {
+        return false;
+    }
+    const size_t length = strnlen(value, maximum_size + 1U);
+    if (length == 0U || length > maximum_size) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        if (!isspace((unsigned char)value[index])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static device_connection_result_t outbound_enqueue(
+    device_connection_t *connection,
+    const device_connection_outbound_t *outbound)
+{
+    TaskHandle_t task;
+    bool online;
+    taskENTER_CRITICAL(&connection->input_lock);
+    online = connection->started &&
+             connection->status.state == DEVICE_CONNECTION_STATE_ONLINE &&
+             connection->status.connection_epoch == outbound->connection_epoch;
+    task = connection->task;
+    taskEXIT_CRITICAL(&connection->input_lock);
+    if (!online || task == NULL) {
+        return DEVICE_CONNECTION_RESULT_INVALID_STATE;
+    }
+    if (xQueueSend(connection->outbound_queue, outbound, 0U) != pdTRUE) {
+        return DEVICE_CONNECTION_RESULT_CAPACITY_EXCEEDED;
+    }
+    xTaskNotifyGive(task);
+    return DEVICE_CONNECTION_RESULT_OK;
 }
 
 static bool transport_cancelled(void *context)
@@ -1119,6 +1198,152 @@ static void online_pcm_handle(
         monotonic_ms());
 }
 
+static bool outbound_process_one(
+    device_connection_t *connection,
+    bool *processed)
+{
+    device_connection_outbound_t outbound;
+    if (xQueueReceive(connection->outbound_queue, &outbound, 0U) != pdTRUE) {
+        *processed = false;
+        return true;
+    }
+    *processed = true;
+    if (connection->supervisor.state != DEVICE_CONNECTION_STATE_ONLINE ||
+        outbound.connection_epoch != connection->supervisor.connection_epoch) {
+        memset(&outbound, 0, sizeof(outbound));
+        return true;
+    }
+
+    char message_id[DEVICE_CONNECTION_MESSAGE_ID_BYTES + 1U] = {0};
+    char encoded[DEVICE_CONNECTION_AUTH_MESSAGE_MAX_BYTES] = {0};
+    size_t encoded_size = 0U;
+    device_protocol_result_t encode_result = DEVICE_PROTOCOL_RESULT_OK;
+    wss_transport_result_t send_result;
+    const bool pcm_outbound = outbound.type == DEVICE_CONNECTION_OUTBOUND_PCM;
+    if (pcm_outbound) {
+        send_result = wss_transport_send_binary(
+            connection->transport,
+            outbound.value.pcm_frame,
+            sizeof(outbound.value.pcm_frame),
+            DEVICE_CONNECTION_SEND_TIMEOUT_MS);
+    } else {
+        if (!create_random_token(
+                DEVICE_CONNECTION_MESSAGE_RANDOM_BYTES,
+                message_id,
+                sizeof(message_id))) {
+            memset(&outbound, 0, sizeof(outbound));
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return false;
+        }
+        switch (outbound.type) {
+            case DEVICE_CONNECTION_OUTBOUND_LISTEN_START:
+                encode_result = device_media_control_encode_listen_start(
+                    message_id,
+                    outbound.value.listen_start.client_input_id,
+                    outbound.value.listen_start.stream_id,
+                    connection->output_preference,
+                    encoded,
+                    sizeof(encoded),
+                    &encoded_size);
+                break;
+            case DEVICE_CONNECTION_OUTBOUND_LISTEN_STOP:
+                encode_result = device_media_control_encode_listen_stop(
+                    message_id,
+                    outbound.value.listen_stop.stream_id,
+                    outbound.value.listen_stop.last_sequence,
+                    encoded,
+                    sizeof(encoded),
+                    &encoded_size);
+                break;
+            case DEVICE_CONNECTION_OUTBOUND_LISTEN_CANCEL:
+                encode_result = device_media_control_encode_listen_cancel(
+                    message_id,
+                    outbound.value.listen_cancel.stream_id,
+                    encoded,
+                    sizeof(encoded),
+                    &encoded_size);
+                break;
+            case DEVICE_CONNECTION_OUTBOUND_PLAYBACK_CANCEL:
+                encode_result = device_media_control_encode_playback_cancel(
+                    message_id,
+                    outbound.value.playback_cancel.output_id,
+                    outbound.value.playback_cancel.stream_id,
+                    encoded,
+                    sizeof(encoded),
+                    &encoded_size);
+                break;
+            default:
+                encode_result = DEVICE_PROTOCOL_RESULT_INVALID_ARGUMENT;
+                break;
+        }
+        if (encode_result != DEVICE_PROTOCOL_RESULT_OK) {
+            memset(&outbound, 0, sizeof(outbound));
+            memset(encoded, 0, sizeof(encoded));
+            record_failure(
+                connection,
+                DEVICE_CONNECTION_FAILURE_PROTOCOL,
+                WSS_TRANSPORT_RESULT_PROTOCOL_ERROR);
+            return false;
+        }
+        send_result = wss_transport_send_text(
+            connection->transport,
+            (const uint8_t *)encoded,
+            encoded_size,
+            DEVICE_CONNECTION_SEND_TIMEOUT_MS);
+    }
+    memset(&outbound, 0, sizeof(outbound));
+    memset(encoded, 0, sizeof(encoded));
+    if (send_result != WSS_TRANSPORT_RESULT_OK) {
+        record_failure(connection, transport_failure(send_result), send_result);
+        return false;
+    }
+    taskENTER_CRITICAL(&connection->input_lock);
+    if (pcm_outbound) {
+        ++connection->status.outbound_pcm_frame_count;
+    } else {
+        ++connection->status.outbound_control_message_count;
+    }
+    taskEXIT_CRITICAL(&connection->input_lock);
+    return true;
+}
+
+static void online_service(device_connection_t *connection)
+{
+    for (size_t index = 0U; index < DEVICE_CONNECTION_OUTBOUND_BURST; ++index) {
+        bool processed = false;
+        if (!outbound_process_one(connection, &processed) ||
+            connection->supervisor.state != DEVICE_CONNECTION_STATE_ONLINE) {
+            return;
+        }
+        if (!processed) {
+            break;
+        }
+    }
+    if (monotonic_ms() - wss_transport_last_receive_time_ms(connection->transport) >=
+        DEVICE_CONNECTION_RECEIVE_TIMEOUT_MS) {
+        record_failure(
+            connection,
+            DEVICE_CONNECTION_FAILURE_TRANSIENT,
+            WSS_TRANSPORT_RESULT_TIMEOUT);
+        return;
+    }
+    bool readable = false;
+    const wss_transport_result_t wait_result = wss_transport_wait_readable(
+        connection->transport,
+        DEVICE_CONNECTION_ONLINE_POLL_MS,
+        &readable);
+    if (wait_result != WSS_TRANSPORT_RESULT_OK) {
+        record_failure(connection, transport_failure(wait_result), wait_result);
+        return;
+    }
+    if (readable) {
+        receive_transport_message(connection);
+    }
+}
+
 static void authentication_control_handle(
     device_connection_t *connection,
     const device_control_envelope_t *envelope)
@@ -1315,6 +1540,9 @@ static void device_connection_task(void *context)
             break;
         }
         synchronize_inputs(connection);
+        if (connection->supervisor.state != DEVICE_CONNECTION_STATE_ONLINE) {
+            (void)xQueueReset(connection->outbound_queue);
+        }
         if (!connection->supervisor.wifi_has_ip) {
             wait_for_work(connection);
             continue;
@@ -1327,8 +1555,10 @@ static void device_connection_task(void *context)
                 connect_transport(connection);
                 break;
             case DEVICE_CONNECTION_STATE_AUTHENTICATING:
-            case DEVICE_CONNECTION_STATE_ONLINE:
                 receive_transport_message(connection);
+                break;
+            case DEVICE_CONNECTION_STATE_ONLINE:
+                online_service(connection);
                 break;
             case DEVICE_CONNECTION_STATE_BACKOFF: {
                 wait_for_work(connection);
@@ -1456,8 +1686,27 @@ device_connection_result_t device_connection_create(
             config->client_version,
             client_version_length + 1U);
     }
+    (*connection)->outbound_queue_storage = heap_caps_malloc(
+        DEVICE_CONNECTION_OUTBOUND_QUEUE_LENGTH * sizeof(device_connection_outbound_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if ((*connection)->outbound_queue_storage != NULL) {
+        (*connection)->outbound_queue = xQueueCreateStatic(
+            DEVICE_CONNECTION_OUTBOUND_QUEUE_LENGTH,
+            sizeof(device_connection_outbound_t),
+            (*connection)->outbound_queue_storage,
+            &(*connection)->outbound_queue_state);
+    }
+    if ((*connection)->outbound_queue == NULL) {
+        free((*connection)->outbound_queue_storage);
+        device_pairing_destroy((*connection)->pairing);
+        free(*connection);
+        *connection = NULL;
+        return DEVICE_CONNECTION_RESULT_NO_MEMORY;
+    }
     (*connection)->lifecycle_events = xEventGroupCreate();
     if ((*connection)->lifecycle_events == NULL) {
+        vQueueDelete((*connection)->outbound_queue);
+        free((*connection)->outbound_queue_storage);
         device_pairing_destroy((*connection)->pairing);
         free(*connection);
         *connection = NULL;
@@ -1569,6 +1818,121 @@ device_connection_result_t device_connection_copy_pairing_code(
     return DEVICE_CONNECTION_RESULT_OK;
 }
 
+device_connection_result_t device_connection_send_listen_start(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    const char *client_input_id,
+    uint32_t stream_id)
+{
+    if (connection == NULL || connection_epoch == 0U || stream_id == 0U ||
+        !outbound_identifier_valid(client_input_id, DEVICE_CLIENT_INPUT_ID_MAX_BYTES)) {
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    device_connection_outbound_t outbound = {
+        .type = DEVICE_CONNECTION_OUTBOUND_LISTEN_START,
+        .connection_epoch = connection_epoch,
+        .value.listen_start.stream_id = stream_id,
+    };
+    memcpy(
+        outbound.value.listen_start.client_input_id,
+        client_input_id,
+        strlen(client_input_id) + 1U);
+    const device_connection_result_t result = outbound_enqueue(connection, &outbound);
+    memset(&outbound, 0, sizeof(outbound));
+    return result;
+}
+
+device_connection_result_t device_connection_send_pcm(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    uint32_t stream_id,
+    uint32_t sequence,
+    const uint8_t pcm_payload[DEVICE_PCM_PAYLOAD_BYTES])
+{
+    if (connection == NULL || connection_epoch == 0U || stream_id == 0U ||
+        pcm_payload == NULL) {
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    device_connection_outbound_t outbound = {
+        .type = DEVICE_CONNECTION_OUTBOUND_PCM,
+        .connection_epoch = connection_epoch,
+    };
+    if (device_pcm_frame_encode(
+            DEVICE_PCM_DIRECTION_UPLINK,
+            stream_id,
+            sequence,
+            pcm_payload,
+            DEVICE_PCM_PAYLOAD_BYTES,
+            outbound.value.pcm_frame,
+            sizeof(outbound.value.pcm_frame)) != DEVICE_PROTOCOL_RESULT_OK) {
+        memset(&outbound, 0, sizeof(outbound));
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    const device_connection_result_t result = outbound_enqueue(connection, &outbound);
+    memset(&outbound, 0, sizeof(outbound));
+    return result;
+}
+
+device_connection_result_t device_connection_send_listen_stop(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    uint32_t stream_id,
+    uint32_t last_sequence)
+{
+    if (connection == NULL || connection_epoch == 0U || stream_id == 0U) {
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    device_connection_outbound_t outbound = {
+        .type = DEVICE_CONNECTION_OUTBOUND_LISTEN_STOP,
+        .connection_epoch = connection_epoch,
+        .value.listen_stop = {
+            .stream_id = stream_id,
+            .last_sequence = last_sequence,
+        },
+    };
+    return outbound_enqueue(connection, &outbound);
+}
+
+device_connection_result_t device_connection_send_listen_cancel(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    uint32_t stream_id)
+{
+    if (connection == NULL || connection_epoch == 0U || stream_id == 0U) {
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    const device_connection_outbound_t outbound = {
+        .type = DEVICE_CONNECTION_OUTBOUND_LISTEN_CANCEL,
+        .connection_epoch = connection_epoch,
+        .value.listen_cancel.stream_id = stream_id,
+    };
+    return outbound_enqueue(connection, &outbound);
+}
+
+device_connection_result_t device_connection_send_playback_cancel(
+    device_connection_t *connection,
+    uint64_t connection_epoch,
+    const char *output_id,
+    uint32_t stream_id)
+{
+    if (connection == NULL || connection_epoch == 0U || stream_id == 0U ||
+        !outbound_identifier_valid(output_id, DEVICE_MEDIA_OUTPUT_ID_MAX_BYTES)) {
+        return DEVICE_CONNECTION_RESULT_INVALID_ARGUMENT;
+    }
+    device_connection_outbound_t outbound = {
+        .type = DEVICE_CONNECTION_OUTBOUND_PLAYBACK_CANCEL,
+        .connection_epoch = connection_epoch,
+        .value.playback_cancel.stream_id = stream_id,
+    };
+    memcpy(
+        outbound.value.playback_cancel.output_id,
+        output_id,
+        strlen(output_id) + 1U);
+    const device_connection_result_t result = outbound_enqueue(connection, &outbound);
+    memset(&outbound, 0, sizeof(outbound));
+    return result;
+}
+
 void device_connection_get_status(
     device_connection_t *connection,
     device_connection_status_t *status)
@@ -1613,6 +1977,8 @@ void device_connection_destroy(device_connection_t *connection)
     }
     device_connection_stop(connection);
     device_pairing_destroy(connection->pairing);
+    vQueueDelete(connection->outbound_queue);
+    free(connection->outbound_queue_storage);
     vEventGroupDelete(connection->lifecycle_events);
     free(connection);
 }

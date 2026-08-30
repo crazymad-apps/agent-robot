@@ -42,7 +42,7 @@ struct terminal_ui {
 static bool projection_valid(const terminal_ui_projection_t *projection)
 {
     if (projection == NULL || projection->state > TERMINAL_UI_STATE_ERROR ||
-        projection->error > TERMINAL_UI_ERROR_NETWORK) {
+        projection->error > TERMINAL_UI_ERROR_AUDIO) {
         return false;
     }
     if (!projection->pairing_code_visible) {
@@ -151,6 +151,8 @@ static const char *error_detail(terminal_ui_error_t error)
             return "PROTOCOL";
         case TERMINAL_UI_ERROR_NETWORK:
             return "NETWORK";
+        case TERMINAL_UI_ERROR_AUDIO:
+            return "AUDIO";
         default:
             return "CHECK CONNECTION";
     }

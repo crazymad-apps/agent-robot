@@ -7,5 +7,5 @@ idf_component_register(
         "audio_playback_ring_memory.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "private_include"
-    REQUIRES board device_protocol esp_driver_gpio esp_driver_i2s freertos heap
+    REQUIRES board device_protocol esp_driver_gpio esp_driver_i2s esp_timer freertos heap
 )

@@ -39,6 +39,7 @@ typedef enum {
     TERMINAL_UI_ERROR_IDENTITY,
     TERMINAL_UI_ERROR_PROTOCOL,
     TERMINAL_UI_ERROR_NETWORK,
+    TERMINAL_UI_ERROR_AUDIO,
 } terminal_ui_error_t;
 
 typedef struct {

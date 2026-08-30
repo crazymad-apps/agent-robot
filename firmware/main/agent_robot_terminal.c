@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "audio_io.h"
 #include "device_identity.h"
 #include "esp_app_desc.h"
 #include "esp_err.h"
@@ -25,17 +26,34 @@ static const char *const TAG = "terminal_lifecycle";
 typedef enum {
     TERMINAL_EVENT_NETWORK = 0,
     TERMINAL_EVENT_DEVICE_CONNECTION,
+    TERMINAL_EVENT_DEVICE_MEDIA_STATE,
+    TERMINAL_EVENT_AUDIO_IO,
 } terminal_event_type_t;
+
+typedef struct {
+    uint64_t connection_epoch;
+    device_media_interaction_state_t state;
+} terminal_media_state_event_t;
+
+typedef struct {
+    audio_io_event_type_t type;
+    audio_io_result_t result;
+    uint64_t connection_epoch;
+    uint32_t stream_id;
+} terminal_audio_io_event_t;
 
 typedef struct {
     terminal_event_type_t type;
     union {
         network_connectivity_event_t network;
         device_connection_event_t device_connection;
+        terminal_media_state_event_t media_state;
+        terminal_audio_io_event_t audio_io;
     } value;
 } terminal_event_t;
 
 static QueueHandle_t terminal_event_queue;
+static audio_io_t *terminal_audio_io;
 static network_connectivity_t *terminal_network_connectivity;
 static device_connection_t *terminal_device_connection;
 static device_identity_t *terminal_device_identity;
@@ -44,7 +62,11 @@ static terminal_ui_t *terminal_user_interface;
 static uint32_t terminal_event_drop_count;
 static uint32_t terminal_device_network_update_error_count;
 static uint32_t terminal_ui_update_error_count;
+static uint32_t terminal_audio_ingress_error_count;
+static uint32_t terminal_audio_cancel_error_count;
 static bool terminal_device_paired;
+static bool terminal_device_online;
+static uint64_t terminal_online_connection_epoch;
 static device_pairing_state_t terminal_pairing_state = DEVICE_PAIRING_STATE_READY;
 
 static void terminal_device_connection_network_changed(
@@ -213,6 +235,83 @@ static void terminal_device_connection_event(
     }
 }
 
+static void terminal_audio_io_event(
+    const audio_io_event_t *event,
+    void *context)
+{
+    QueueHandle_t event_queue = context;
+    const terminal_event_t terminal_event = {
+        .type = TERMINAL_EVENT_AUDIO_IO,
+        .value.audio_io = {
+            .type = event->type,
+            .result = event->result,
+            .connection_epoch = event->connection_epoch,
+            .stream_id = event->stream_id,
+        },
+    };
+    if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+        (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+    }
+}
+
+static bool terminal_device_media_event(
+    const device_connection_media_event_t *event,
+    void *context)
+{
+    if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_STATE_CHANGED) {
+        QueueHandle_t event_queue = context;
+        const terminal_event_t terminal_event = {
+            .type = TERMINAL_EVENT_DEVICE_MEDIA_STATE,
+            .value.media_state = {
+                .connection_epoch = event->connection_epoch,
+                .state = event->value.state_changed.state,
+            },
+        };
+        if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+            (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+        }
+        return true;
+    }
+    if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_INPUT_ACCEPTED) {
+        QueueHandle_t event_queue = context;
+        const terminal_event_t terminal_event = {
+            .type = TERMINAL_EVENT_DEVICE_MEDIA_STATE,
+            .value.media_state = {
+                .connection_epoch = event->connection_epoch,
+                .state = DEVICE_MEDIA_INTERACTION_STATE_PROCESSING,
+            },
+        };
+        if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+            (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+        }
+        return true;
+    }
+    audio_io_result_t result = AUDIO_IO_RESULT_OK;
+    if (terminal_audio_io == NULL) {
+        result = AUDIO_IO_RESULT_INVALID_STATE;
+    } else if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_START) {
+        result = audio_io_playback_begin(
+            terminal_audio_io,
+            event->connection_epoch,
+            &event->value.playback_start);
+    } else if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_PCM_FRAME) {
+        result = audio_io_playback_push(
+            terminal_audio_io,
+            event->connection_epoch,
+            &event->value.pcm_frame);
+    } else if (event->type == DEVICE_CONNECTION_MEDIA_EVENT_PLAYBACK_END) {
+        result = audio_io_playback_end(
+            terminal_audio_io,
+            event->connection_epoch,
+            &event->value.playback_end);
+    }
+    if (result != AUDIO_IO_RESULT_OK) {
+        (void)__atomic_fetch_add(&terminal_audio_ingress_error_count, 1U, __ATOMIC_RELAXED);
+        return false;
+    }
+    return true;
+}
+
 static const char *device_connection_state_name(device_connection_state_t state)
 {
     switch (state) {
@@ -238,6 +337,25 @@ static const char *device_connection_state_name(device_connection_state_t state)
 static void terminal_device_connection_event_process(
     const device_connection_event_t *event)
 {
+    if (event->state == DEVICE_CONNECTION_STATE_ONLINE) {
+        terminal_device_online = true;
+        terminal_online_connection_epoch = event->connection_epoch;
+    } else if (terminal_device_online &&
+               event->connection_epoch == terminal_online_connection_epoch) {
+        terminal_device_online = false;
+        if (terminal_audio_io != NULL) {
+            const audio_io_result_t cancel_result = audio_io_playback_cancel(
+                terminal_audio_io,
+                event->connection_epoch);
+            if (cancel_result != AUDIO_IO_RESULT_OK &&
+                cancel_result != AUDIO_IO_RESULT_INVALID_STATE) {
+                (void)__atomic_fetch_add(
+                    &terminal_audio_cancel_error_count,
+                    1U,
+                    __ATOMIC_RELAXED);
+            }
+        }
+    }
     terminal_device_connection_ui_project(event);
     if (event->type == DEVICE_CONNECTION_EVENT_HOST_SELECTED) {
         ESP_LOGI(
@@ -279,6 +397,67 @@ static void terminal_device_connection_event_process(
             (unsigned int)event->block_reason,
             (unsigned long long)event->connection_epoch);
     }
+}
+
+static void terminal_media_state_event_process(
+    const terminal_media_state_event_t *event)
+{
+    if (!terminal_device_online ||
+        event->connection_epoch != terminal_online_connection_epoch) {
+        return;
+    }
+    terminal_ui_state_t ui_state;
+    switch (event->state) {
+        case DEVICE_MEDIA_INTERACTION_STATE_IDLE:
+            ui_state = TERMINAL_UI_STATE_READY;
+            break;
+        case DEVICE_MEDIA_INTERACTION_STATE_LISTENING:
+            ui_state = TERMINAL_UI_STATE_LISTENING;
+            break;
+        case DEVICE_MEDIA_INTERACTION_STATE_RECOGNIZING:
+        case DEVICE_MEDIA_INTERACTION_STATE_PROCESSING:
+            ui_state = TERMINAL_UI_STATE_THINKING;
+            break;
+        case DEVICE_MEDIA_INTERACTION_STATE_SPEAKING:
+            ui_state = TERMINAL_UI_STATE_SPEAKING;
+            break;
+        case DEVICE_MEDIA_INTERACTION_STATE_NEEDS_ATTENTION:
+        case DEVICE_MEDIA_INTERACTION_STATE_ERROR:
+        case DEVICE_MEDIA_INTERACTION_STATE_UNAVAILABLE:
+            ui_state = TERMINAL_UI_STATE_CHECK_DESKTOP;
+            break;
+        default:
+            return;
+    }
+    terminal_ui_project(ui_state, TERMINAL_UI_ERROR_NONE);
+    ESP_LOGI(
+        TAG,
+        "event=device_media_state_changed state=%u connection_epoch=%llu",
+        (unsigned int)event->state,
+        (unsigned long long)event->connection_epoch);
+}
+
+static void terminal_audio_io_event_process(
+    const terminal_audio_io_event_t *event)
+{
+    if (event->type == AUDIO_IO_EVENT_PLAYBACK_STARTED && terminal_device_online &&
+        event->connection_epoch == terminal_online_connection_epoch) {
+        terminal_ui_project(TERMINAL_UI_STATE_SPEAKING, TERMINAL_UI_ERROR_NONE);
+    } else if ((event->type == AUDIO_IO_EVENT_PLAYBACK_COMPLETED ||
+                event->type == AUDIO_IO_EVENT_PLAYBACK_CANCELLED) &&
+               terminal_device_online &&
+               event->connection_epoch == terminal_online_connection_epoch) {
+        terminal_ui_project(TERMINAL_UI_STATE_READY, TERMINAL_UI_ERROR_NONE);
+    } else if (event->type == AUDIO_IO_EVENT_PLAYBACK_FAILED) {
+        terminal_ui_project(TERMINAL_UI_STATE_ERROR, TERMINAL_UI_ERROR_AUDIO);
+    }
+    ESP_LOGI(
+        TAG,
+        "event=audio_playback type=%u result=%u stream_id=%lu connection_epoch=%llu",
+        (unsigned int)event->type,
+        (unsigned int)event->result,
+        (unsigned long)event->stream_id,
+        (unsigned long long)event->connection_epoch);
 }
 
 static void terminal_device_connection_network_changed(
@@ -386,8 +565,36 @@ static void terminal_lifecycle_task(void *context)
                 "event=terminal_ui_update_failed count=%lu",
                 (unsigned long)ui_update_errors);
         }
+        const uint32_t audio_ingress_errors = __atomic_exchange_n(
+            &terminal_audio_ingress_error_count,
+            0U,
+            __ATOMIC_RELAXED);
+        if (audio_ingress_errors != 0U) {
+            ESP_LOGE(
+                TAG,
+                "event=audio_ingress_failed count=%lu",
+                (unsigned long)audio_ingress_errors);
+        }
+        const uint32_t audio_cancel_errors = __atomic_exchange_n(
+            &terminal_audio_cancel_error_count,
+            0U,
+            __ATOMIC_RELAXED);
+        if (audio_cancel_errors != 0U) {
+            ESP_LOGE(
+                TAG,
+                "event=audio_cancel_failed count=%lu",
+                (unsigned long)audio_cancel_errors);
+        }
         if (event.type == TERMINAL_EVENT_DEVICE_CONNECTION) {
             terminal_device_connection_event_process(&event.value.device_connection);
+            continue;
+        }
+        if (event.type == TERMINAL_EVENT_DEVICE_MEDIA_STATE) {
+            terminal_media_state_event_process(&event.value.media_state);
+            continue;
+        }
+        if (event.type == TERMINAL_EVENT_AUDIO_IO) {
+            terminal_audio_io_event_process(&event.value.audio_io);
             continue;
         }
         const network_connectivity_event_t *network_event = &event.value.network;
@@ -507,6 +714,20 @@ void app_main(void)
             ? ESP_OK
             : ESP_ERR_NO_MEM);
 
+    const audio_io_config_t audio_io_config = {
+        .playback_gain_percent = AUDIO_IO_DEFAULT_PLAYBACK_GAIN_PERCENT,
+        .event_callback = terminal_audio_io_event,
+        .event_context = terminal_event_queue,
+    };
+    ESP_ERROR_CHECK(
+        audio_io_create(&audio_io_config, &terminal_audio_io) == AUDIO_IO_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+    ESP_ERROR_CHECK(
+        audio_io_start(terminal_audio_io) == AUDIO_IO_RESULT_OK
+            ? ESP_OK
+            : ESP_FAIL);
+
     device_connection_identity_t connection_identity = {0};
     const bool identity_loaded = terminal_identity_load(&connection_identity);
     if (identity_loaded) {
@@ -528,6 +749,8 @@ void app_main(void)
             .display_name = "Agent Robot Terminal",
             .event_callback = terminal_device_connection_event,
             .event_context = terminal_event_queue,
+            .media_callback = terminal_device_media_event,
+            .media_context = terminal_event_queue,
         };
         ESP_ERROR_CHECK(
             device_connection_create(

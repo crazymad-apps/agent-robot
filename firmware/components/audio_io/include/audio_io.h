@@ -11,6 +11,8 @@
 extern "C" {
 #endif
 
+#define AUDIO_IO_DEFAULT_PLAYBACK_GAIN_PERCENT 75U
+
 typedef struct audio_io audio_io_t;
 
 typedef enum {
@@ -67,6 +69,7 @@ typedef struct {
     uint64_t received_frame_count;
     uint64_t consumed_sample_count;
     size_t queued_frame_count;
+    size_t queued_playback_count;
     uint32_t completed_playback_count;
     uint32_t cancelled_playback_count;
     uint32_t failed_playback_count;
@@ -76,7 +79,7 @@ audio_io_result_t audio_io_create(const audio_io_config_t *config, audio_io_t **
 
 audio_io_result_t audio_io_start(audio_io_t *audio_io);
 
-/* These ingress functions are non-blocking and are safe to call on the Network task. */
+/* These ingress functions use only a bounded lock wait and perform no blocking I/O. */
 audio_io_result_t audio_io_playback_begin(
     audio_io_t *audio_io,
     uint64_t connection_epoch,
@@ -92,7 +95,10 @@ audio_io_result_t audio_io_playback_end(
     uint64_t connection_epoch,
     const device_media_playback_end_t *playback_end);
 
-/* Cancels only the matching connection epoch; stale disconnects cannot stop a new session. */
+/*
+ * Cancels only the matching connection epoch; stale disconnects cannot stop a
+ * new session. This lifecycle operation may wait for the Audio task lock.
+ */
 audio_io_result_t audio_io_playback_cancel(audio_io_t *audio_io, uint64_t connection_epoch);
 
 void audio_io_get_status(audio_io_t *audio_io, audio_io_status_t *status);

@@ -1,42 +1,50 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-08-30",
+  "recorded_at": "2026-09-01",
   "protocol": {
     "major": 1,
     "minor": 0,
     "pairing_code_digits": 6
   },
   "agent_robot": {
-    "baseline_commit": "bc6bff07964902e1eafd507d4cf9daeca7791250",
-    "firmware_baseline_commit": "1801dce63ea3f15021c26d15be34c0867e805a99",
+    "baseline_commit": "c847fc67e49f32e68eddcef5dc913451499e0668",
+    "firmware_baseline_commit": "b6992531e6e4495dfeccf249077a370db38be3d2",
     "firmware_project": "agent_robot_terminal"
   },
   "ez_assistant": {
     "repository_path": "/Users/chenjiale/github/ez-assistant",
-    "base_commit": "444168730d6693e9b2911e83bbcdffd957e115f7",
-    "worktree_reproducible_from_commit": false,
+    "base_commit": "b44fb5365571fe3b06f117a12867d7855a60c635",
+    "worktree_reproducible_from_commit": true,
     "protocol_frozen": true,
     "protocol_frozen_at": "2026-08-30",
-    "tracked_modified_files": 104,
-    "untracked_paths": 35,
+    "tracked_modified_files": 0,
+    "untracked_paths": 0,
     "relevant_source_sha256": {
-      "apps/runtime-host/src/device/connection.rs": "ab3e1b96ee02e7185ac1573680ca1ee2e25b63753b8fb7ca4b643fb45c817339",
-      "apps/runtime-host/src/device/crypto.rs": "0dc0b42da56781c4d0745395220f4b5bcf35506cc6c06e7765e383e40e154d68",
-      "apps/runtime-host/src/device/protocol.rs": "1f8649f00658ff76bccc63dcf361d454e4af66a1c74719958f7262c9fe9e6fa7",
-      "apps/runtime-host/src/device/dispatcher.rs": "521fa53ebb966a1c98685d5071c7f9d822c8851b882d8c2d1ab8a8c86d3a84da",
-      "apps/runtime-host/src/device/gateway.rs": "92f7750ed1c7d1982356c345aa1b5e937d66ed5f5150be999d54ff6738b7863e",
+      "apps/runtime-host/src/device/connection.rs": "92e2d5faabbcd6f38513bd4722f8af75c4f8184cdbe731cf4bd2ad461deaa0a5",
+      "apps/runtime-host/src/device/crypto.rs": "94990953c8f152467b6f6ae2a48e95e570c8763d1c5bc024dd5cc60a4ca2eafd",
+      "apps/runtime-host/src/device/protocol.rs": "c11b926e447a89bfa9b8cbd5568903c06969e1f6c5b8024d8e62e93a71285979",
+      "apps/runtime-host/src/device/dispatcher.rs": "c8a29ae94b5821bc1f0992b7da1bd941b137a59c04033f52759165d911fcbf3c",
+      "apps/runtime-host/src/device/gateway.rs": "5bdc6e975be59be2de91af7f1e0d69e0743253648158998790c715ccb1efd824",
       "apps/desktop/src/features/settings/SettingsDialog/DeviceSettingsPage.tsx": "051806bb67de0c2f208ca1c2a5ec2544907d3f49221d7821c24c483e8cecba77",
       "apps/desktop/src/stores/DeviceGatewayStore.ts": "8579510ed123e590b37012e1fdfb22ea79e97057d33595f987d72f30d34f43de",
-      "crates/assistant-runtime/src/channel.rs": "79c7b01dfb24316b802a861bfb03fba24354d3071fd6660d5d5f7783fd0ec2bd",
-      "crates/assistant-runtime/src/runtime/channel.rs": "2bfd3de1e6e6b0393cf85b6559fae366b8de74d1aaa66fa98f558cb913600930",
+      "crates/assistant-runtime/src/channel.rs": "2984c282a1a875ace9985a3acdb2e16bb74fe47da96341f4e40bb0957cb5b693",
+      "crates/assistant-runtime/src/runtime/channel/mod.rs": "4fe624d6232b40498b86931870f5f0961fd4312365a97ae08d224f5cc635aba2",
+      "crates/assistant-runtime/src/runtime/channel/speak.rs": "53ce096e9f23448f7e4d0f23cb4ed34d1bfde46b1f568c4951ae1998fddb53c9",
       "crates/assistant-runtime/src/runtime/device.rs": "7236b0db300b641eb62ec7a1c035e8f72c0ca4d84d0950923d226590a2ff54d6",
-      "crates/assistant-runtime/src/runtime/tests/device.rs": "4e54b1a7713116840e382d3f848c9c04abd1911792b31330dac0c8513b6053e2",
-      "docs/design/v0.21.0-技术方案附件A-Gateway与设备协议.md": "1ae7c0afe392953a48e866c9a02415ec7bf118bfaa1a87deda5fe8f1e49813de",
-      "docs/design/v0.21.0-技术方案附件C-语音与播报.md": "7ade3c4e2922c257376ba259db48f20aaf66b05e3088bdcfea2b05b565966d79",
-      "tools/device-simulator/src/node/connection.ts": "4e4269681f22909adf68ed3ebb36e9382b7d9d853fc1c76739a7c1197d4b1e90",
+      "crates/assistant-runtime/src/runtime/tests/device.rs": "9879b824c9cf2b015c2928a9fc25cbd2c75f929d084418fb057333f24e1de2c9",
+      "docs/versions/v0.21.0/技术方案附件A-Gateway与设备协议.md": "fcc6f672a2a255d21adf476b9e2b15b21a8dbf79e9d7a51a5df66be4dc51f59e",
+      "docs/versions/v0.21.0/技术方案附件C-语音与播报.md": "c9faffa4edc93f830042ef576413507d6587f0857caf547b748762acebeb40c8",
+      "tools/device-simulator/src/node/connection.ts": "3e1df81f482012a380d3fdee49340801b1df2696581199823c447c775aa884c5",
+      "tools/device-simulator/src/node/state.ts": "8e5c73d52af07c665e1baef22f5f1cc45524c13668f85c01cc53f4bdd648cb1b",
       "tools/device-simulator/src/node/crypto.ts": "8e69a530d9bf64942ea7f055a3bdaabcaee59d4a7949bb546fbbcaee43d894a9",
       "tools/device-simulator/src/node/protocol.ts": "143a2641ac8c64b1c3a32a367324ee976e57b6e61161939d3492714d2808ea80",
-      "tools/device-simulator/tests/m5-e2e.mjs": "133824c0628516b0a2799f184e07fbb1583a5c1b9e2ad6a9b90d234763f81911"
+      "tools/device-simulator/tests/m5-e2e.mjs": "95fed68a04d834e8460c8658854760e7ea796371260f1c74008689387fb028ef",
+      "tools/device-simulator/tests/m8-e2e.mjs": "1247876ed89efb9847c0f81d54bf90f6d977fa4f34011dda5de01a2928827ab9"
+    },
+    "release_host": {
+      "path": "target/release/ez-assistant-runtime",
+      "sha256": "48d7efba12a3cad091fb534dced2633cc6749b7b9d56f20282bc9fe2e9f60229",
+      "built_from_worktree": true
     }
   },
   "fixtures": {
@@ -50,10 +58,13 @@
     "board": "ESP32-S3-DevKitC-1 v1.1 / ESP32-S3-WROOM-1-N8R8"
   },
   "verification": {
-    "ez_assistant_device_tests": "passed: 12",
-    "ez_assistant_runtime_device_tests": "passed: 10",
-    "node_simulator_tests": "passed: 36",
+    "ez_assistant_device_tests": "passed: 16",
+    "ez_assistant_runtime_device_tests": "passed: 11",
+    "node_simulator_tests": "passed: 37",
     "desktop_relevant_tests": "passed: 15",
-    "m7_offline_revocation_reentered_pairing": true
+    "m7_offline_revocation_reentered_pairing": true,
+    "m8_continuous_input_cross_wss": true,
+    "m8_active_run_takeover": true,
+    "m8_late_playback_suppressed": true
   }
 }

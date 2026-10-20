@@ -1,0 +1,316 @@
+{
+  "recorded_at": "2026-09-05",
+  "status": "manual_acceptance_pending",
+  "reproducible_from_head_alone": false,
+  "protocol": "device 1.0 wire unchanged; S3.1 implementation snapshot intentionally retained",
+  "agent_robot": {
+    "head": "0384f64c7a7f18d675d1f1d7026e6b96aa988a37",
+    "sources": {
+      "firmware/components/audio_io/audio_io.c": "df75e845b2eddac71a4a5eeca57a38814c31e423f00be005e054c9558e32ca84",
+      "firmware/components/audio_io/audio_playback_queue.c": "aafb72758c9b1a75bcd58536c2aaec6313bf9502ea51dfc145a157a93add25fa",
+      "firmware/components/audio_io/include/audio_io.h": "81919d71c1f7b722c9c311a7c205f48cebc4bc0f4565638d6bc6a3d78a0b561b",
+      "firmware/components/audio_io/private_include/audio_playback_queue.h": "f8ff49e62a42712abaeae3f8681fe1bb34909206b04d1ebabf0547facccc2a52",
+      "firmware/main/agent_robot_terminal.c": "717fb17c25ba6adfb3cb04d685182c63fd17a4d931e1092ccb55df6ed99ff566",
+      "firmware/sdkconfig.defaults": "ca27f7f2ada90987541bdfcc2a958a3e11459ff1c8ef0a398d84415d2a5e32af",
+      "firmware/tools/media_diagnostics.py": "4edd01a345b748061810fa08d31d9a5057d5407b913a504137ced4c2ad4b4c5b",
+      "firmware/test/host/audio_io_playback_test.c": "345164ecdca00e32f68e268800830bfbb66b96426121c2786b93aa45fad03799",
+      "firmware/test/host/media_diagnostics_test.py": "c55fdde79f0ae1f4ec93b42f1d8d9cdb1be540f4578d40d780670ee99c6897e9"
+    },
+    "image_sha256": "758ec5abad3493825f8eae5c229109ae02b44fd0b37def443190e577a19ce144",
+    "elf_sha256": "5afbebd6b59accef675a6456d0f85f27cc2e658f3a2577ff6c006d3b5092fac5",
+    "sdkconfig_sha256": "5412b1b2f2342b062a23357efe24d774d7940f86c7a699826191cb3c00a8dbff",
+    "image_bytes": 1194448,
+    "optimization": "-Os with assertions",
+    "flashed_port": "/dev/cu.usbmodem101"
+  },
+  "ez_assistant": {
+    "head": "bdd34b6962c29723aa97d29cb30c41497754ad91",
+    "sources": {
+      "apps/runtime-host/src/device/connection.rs": "37ae7df6031bed053f9584072b1097e8232546d6132c6321fa9426a1324b9ab9",
+      "apps/runtime-host/src/device/gateway.rs": "a8ccf27c6a579d9f65028136d1c22b0b452257f0a665729de524f8118828b39c",
+      "apps/runtime-host/src/device/gateway/playback.rs": "3aa1a30350f3c0eb23309d021c81c8df24cb9e033bf6286db4647459bf5ac141",
+      "apps/runtime-host/src/device/gateway/playback/tests.rs": "7936c013be8f91c52a4e0ce36702e12f708b000b45911988d227045d9ec22af8",
+      "apps/runtime-host/src/device/protocol.rs": "c11b926e447a89bfa9b8cbd5568903c06969e1f6c5b8024d8e62e93a71285979",
+      "apps/runtime-host/src/device/crypto.rs": "94990953c8f152467b6f6ae2a48e95e570c8763d1c5bc024dd5cc60a4ca2eafd",
+      "apps/runtime-host/src/speech/config.rs": "14c4e17f0c6fae2b5e7d705a7c7cfcc09398601b40ed4cbaa07f6729f30ac164",
+      "apps/runtime-host/src/speech/service.rs": "e9b275687643f6e94f10cebafd55e026fadd6e8a5d64245fa4483768cdbe6850",
+      "apps/runtime-host/src/speech/service/tests.rs": "12b0ebd30efd09f5c8fe574de8b6a514656f8a432e31100fa0f73e6463397afd",
+      "apps/runtime-host/src/media_diagnostics.rs": "028968c087dc3c3761e8d4b68902385e2b79f3f03194a8a496d07029f84300fe",
+      "apps/runtime-host/src/main.rs": "9e257e2000f9efeb4070bf812965d715f524003cd74fafbf021d51a9b171032c"
+    },
+    "release_host_sha256": "ee04bb579abbdb8099e96f7fdd35d9e5086307fc27d457c0a1dd65b081703dfe",
+    "user_host_restarted": false
+  },
+  "idle_evidence": {
+    "event_counts": {
+      "terminal_boot": 1,
+      "device_connection_state_changed": 4,
+      "device_connection_failure": 4,
+      "runtime_resource_snapshot": 2,
+      "audio_resource_snapshot": 2,
+      "voice_resource_snapshot": 2,
+      "runtime_task_stack_snapshot": 12
+    },
+    "metrics": {
+      "device_connection_state_changed.all.block": {
+        "samples": 4,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "device_connection_failure.all.failure": {
+        "samples": 4,
+        "first": 1,
+        "last": 1,
+        "min": 1,
+        "max": 1
+      },
+      "device_connection_failure.all.selection": {
+        "samples": 4,
+        "first": 1,
+        "last": 1,
+        "min": 1,
+        "max": 1
+      },
+      "device_connection_failure.all.transport": {
+        "samples": 4,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "device_connection_failure.all.block": {
+        "samples": 4,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "device_connection_failure.all.reconnect_delay_ms": {
+        "samples": 4,
+        "first": 2021,
+        "last": 8619,
+        "min": 2021,
+        "max": 8619
+      },
+      "runtime_resource_snapshot.all.internal_free_bytes": {
+        "samples": 2,
+        "first": 66851,
+        "last": 67043,
+        "min": 66851,
+        "max": 67043
+      },
+      "runtime_resource_snapshot.all.internal_minimum_free_bytes": {
+        "samples": 2,
+        "first": 63967,
+        "last": 63967,
+        "min": 63967,
+        "max": 63967
+      },
+      "runtime_resource_snapshot.all.internal_largest_block_bytes": {
+        "samples": 2,
+        "first": 29696,
+        "last": 29696,
+        "min": 29696,
+        "max": 29696
+      },
+      "runtime_resource_snapshot.all.psram_free_bytes": {
+        "samples": 2,
+        "first": 6090724,
+        "last": 6090724,
+        "min": 6090724,
+        "max": 6090724
+      },
+      "runtime_resource_snapshot.all.psram_minimum_free_bytes": {
+        "samples": 2,
+        "first": 6090724,
+        "last": 6090724,
+        "min": 6090724,
+        "max": 6090724
+      },
+      "runtime_resource_snapshot.all.psram_largest_block_bytes": {
+        "samples": 2,
+        "first": 6029312,
+        "last": 6029312,
+        "min": 6029312,
+        "max": 6029312
+      },
+      "audio_resource_snapshot.all.playback_state": {
+        "samples": 2,
+        "first": 1,
+        "last": 1,
+        "min": 1,
+        "max": 1
+      },
+      "audio_resource_snapshot.all.queued_frames": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.frame_high_watermark": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.stream_high_watermark": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.rebuffer_total": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.completed": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.cancelled": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.failed": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "audio_resource_snapshot.all.capture_state": {
+        "samples": 2,
+        "first": 1,
+        "last": 1,
+        "min": 1,
+        "max": 1
+      },
+      "voice_resource_snapshot.all.state": {
+        "samples": 2,
+        "first": 1,
+        "last": 1,
+        "min": 1,
+        "max": 1
+      },
+      "voice_resource_snapshot.all.queued_frames": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.accepted": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.retransmissions": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.rejected": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.cancelled": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.expired": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.failed": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "voice_resource_snapshot.all.dropped_frames": {
+        "samples": 2,
+        "first": 0,
+        "last": 0,
+        "min": 0,
+        "max": 0
+      },
+      "runtime_task_stack_snapshot.voice_input.minimum_free_bytes": {
+        "samples": 2,
+        "first": 6288,
+        "last": 6288,
+        "min": 6288,
+        "max": 6288
+      },
+      "runtime_task_stack_snapshot.terminal_ui.minimum_free_bytes": {
+        "samples": 2,
+        "first": 4788,
+        "last": 4724,
+        "min": 4724,
+        "max": 4788
+      },
+      "runtime_task_stack_snapshot.device_connecti.minimum_free_bytes": {
+        "samples": 2,
+        "first": 7784,
+        "last": 7784,
+        "min": 7784,
+        "max": 7784
+      },
+      "runtime_task_stack_snapshot.terminal_button.minimum_free_bytes": {
+        "samples": 2,
+        "first": 2412,
+        "last": 2300,
+        "min": 2300,
+        "max": 2412
+      },
+      "runtime_task_stack_snapshot.audio_io.minimum_free_bytes": {
+        "samples": 2,
+        "first": 3824,
+        "last": 3824,
+        "min": 3824,
+        "max": 3824
+      },
+      "runtime_task_stack_snapshot.terminal_lifecy.minimum_free_bytes": {
+        "samples": 2,
+        "first": 2012,
+        "last": 2012,
+        "min": 2012,
+        "max": 2012
+      }
+    },
+    "observed_uptime_resets": 0,
+    "acceptance": "manual_verification_required",
+    "limitations": [
+      "Software metadata does not prove audible completion.",
+      "Compare idle resource samples within one boot; peaks are not leak evidence.",
+      "No transcript, PCM, credentials, raw identifiers or unknown fields retained."
+    ]
+  }
+}

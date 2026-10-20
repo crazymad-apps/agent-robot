@@ -1,10 +1,11 @@
-# agent-robot — Agent 硬件终端（方案阶段）
+# agent-robot — Agent 硬件终端（开发阶段）
 
 软硬件结合项目：**Agent 本体与权威业务状态运行在 ez-assistant Runtime**，本终端只承担
 设备交互和媒体 I/O（收音 / 播放 / 显示 / 按键 / 网络连接）。
 
 阶段一硬件原型、S2.0–S2.3、S3.0 Demo 链路验证与 **S3.1 正式设备接入基线**均已完成，
-下一阶段为 **S3.2 媒体与 Provider 收敛**。device protocol 1.0 已冻结为 S3.1 组合快照；
+当前阶段为 **S3.2 整体架构 Review、媒体与 Provider 收敛（开发中）**。device protocol 1.0 已冻结为
+S3.1 组合快照；
 ez-assistant v0.21.0 的可复现发布提交由其 M8 归档补齐。
 `docs/roadmap.md` 是当前执行主线；硬件和软件实现必须遵循对应架构基线。
 
@@ -24,6 +25,9 @@ ez-assistant v0.21.0 的可复现发布提交由其 M8 归档补齐。
 
 | 文档 | 内容 |
 |---|---|
+| [`docs/操作说明.md`](docs/操作说明.md) | **操作入口**：配对、手动重置、ASR/TTS 配置、日常对话与连接排查 |
+| [`docs/通信协议.md`](docs/通信协议.md) | **第三方终端接入**：Device Protocol 1.0、配对认证、控制消息、PCM 与恢复规则 |
+| [`docs/协议密码学附录.md`](docs/协议密码学附录.md) | SPAKE2、Ed25519、transcript 与 MAC 的逐字节编码约定 |
 | [`docs/roadmap.md`](docs/roadmap.md) | **当前执行主线**：四阶段实施路线、阶段门与外壳旁支 |
 | [`docs/hardware-architecture.md`](docs/hardware-architecture.md) | **硬件架构基线**：硬件边界、总线、GPIO、电源、PCB 迁移与冻结点 |
 | [`docs/software-architecture.md`](docs/software-architecture.md) | **软件架构基线**：三方职责、语音接入层、固件、设备协议与联合版本规划 |
@@ -35,6 +39,11 @@ ez-assistant v0.21.0 的可复现发布提交由其 M8 归档补齐。
 - **阶段二**：在飞线整机上验证 2.4 GHz Wi-Fi、断线恢复、ESP-SR/WakeNet 本地离线唤醒
   以及联网与持续收音的资源共存；不接入 Agent。
 - **阶段三**：S3.0 已用隔离 Demo 验证通信、ASR/TTS 与 Agent SDK；S3.1 已完成正式 Device Gateway、
-  安全协议、Runtime 端到端语音对话、连续输入聚合与播报抢占；后续继续收敛媒体、Provider 与恢复矩阵。
-- **阶段四**：在接口稳定后自绘 PCB、打样焊接、板级验证，并与外壳支线汇合完成整机。
-- **外壳旁支**：从阶段一开始积累外观与机械约束，PCB 外形冻结后再正式定型。
+  安全协议、Runtime 端到端语音对话、连续输入聚合与播报抢占；S3.2 先 Review 整体正式架构并收敛
+  媒体与 Provider，S3.3
+  实现简洁屏幕 UI、滚轮和确认/返回键，S3.4 接回空闲态 WakeNet 并完成双入口与恢复矩阵。
+- **阶段四**：S4.0 以最终屏幕、控件和声学布局冻结 PCB 输入，不沿用 DevKitC 外形；随后完成
+  PCB v0.1、板级 Bring-up、外壳与整机验收，只有必须改板时才启动 S4.4 PCB v0.2。
+- **外壳旁支**：示意模型只积累外观和人机工学约束；S4.0 冻结屏幕、PCB 与实物尺寸后再正式定型。
+- **阶段五延后路线**：核心整机完成后再分别评估产品化基础、电池电源、声学增强和传输优化，
+  不作为当前四阶段完成门。

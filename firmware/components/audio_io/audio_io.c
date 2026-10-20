@@ -6,6 +6,7 @@
 #include "audio_hardware.h"
 #include "audio_pcm_conversion.h"
 #include "audio_playback_queue.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -92,6 +93,10 @@ static void copy_active_event(
         .connection_epoch = audio_io->status.connection_epoch,
         .stream_id = audio_io->status.stream_id,
         .playback_rebuffer_count = audio_io->status.playback_rebuffer_count,
+        .sample_count = audio_io->status.sample_count,
+        .received_frame_count = audio_io->status.received_frame_count,
+        .consumed_sample_count = audio_io->status.consumed_sample_count,
+        .queued_frame_count = audio_io->status.queued_frame_count,
     };
     memcpy(event->output_id, audio_io->output_id, sizeof(event->output_id));
 }
@@ -497,6 +502,33 @@ static void audio_io_task(void *context)
             continue;
         }
         const uint64_t generation = audio_io->playback_generation;
+        /*
+         * End may arrive after the last sample drained and underrun stopped I2S.
+         * Settle the head before waiting for prebuffer: a completed empty head
+         * can never become ready again, even when later streams are queued.
+         */
+        if (audio_playback_queue_head_drained(audio_io->playback_queue)) {
+            const int64_t now_us = esp_timer_get_time();
+            if (audio_io->hardware_playing && audio_io->playback_buffered_until_us > now_us) {
+                const uint64_t remaining_us =
+                    (uint64_t)(audio_io->playback_buffered_until_us - now_us);
+                const uint64_t remaining_ms = (remaining_us + 999U) / 1000U;
+                const TickType_t wait_ticks = pdMS_TO_TICKS(
+                    remaining_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining_ms);
+                xSemaphoreGive(audio_io->lock);
+                (void)ulTaskNotifyTake(pdTRUE, wait_ticks == 0U ? 1U : wait_ticks);
+                continue;
+            }
+            const bool hardware_playing = audio_io->hardware_playing;
+            xSemaphoreGive(audio_io->lock);
+            playback_finish(
+                audio_io,
+                generation,
+                AUDIO_IO_EVENT_PLAYBACK_COMPLETED,
+                AUDIO_IO_RESULT_OK,
+                hardware_playing);
+            continue;
+        }
         if (!audio_io->hardware_playing) {
             const size_t prebuffer_frame_count =
                 audio_io->playback_rebuffering
@@ -560,27 +592,6 @@ static void audio_io_task(void *context)
             }
             continue;
         }
-        if (audio_playback_queue_head_drained(audio_io->playback_queue)) {
-            const int64_t now_us = esp_timer_get_time();
-            if (audio_io->playback_buffered_until_us > now_us) {
-                const uint64_t remaining_us =
-                    (uint64_t)(audio_io->playback_buffered_until_us - now_us);
-                const uint64_t remaining_ms = (remaining_us + 999U) / 1000U;
-                const TickType_t wait_ticks = pdMS_TO_TICKS(
-                    remaining_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining_ms);
-                xSemaphoreGive(audio_io->lock);
-                (void)ulTaskNotifyTake(pdTRUE, wait_ticks == 0U ? 1U : wait_ticks);
-                continue;
-            }
-            xSemaphoreGive(audio_io->lock);
-            playback_finish(
-                audio_io,
-                generation,
-                AUDIO_IO_EVENT_PLAYBACK_COMPLETED,
-                AUDIO_IO_RESULT_OK,
-                true);
-            continue;
-        }
         const int64_t now_us = esp_timer_get_time();
         if (audio_io->playback_buffered_until_us <= now_us) {
             xSemaphoreGive(audio_io->lock);
@@ -589,6 +600,7 @@ static void audio_io_task(void *context)
             const audio_hardware_result_t stop_result =
                 audio_hardware_playback_stop(audio_io->hardware);
             bool recovery_failed = false;
+            audio_io_status_t recovery_status = {0};
             xSemaphoreTake(audio_io->lock, portMAX_DELAY);
             if (stop_result == AUDIO_HARDWARE_RESULT_OK) {
                 audio_io->hardware_playing = false;
@@ -601,11 +613,26 @@ static void audio_io_task(void *context)
                     audio_io->playback_rebuffering = true;
                     audio_io->status.playback_state = AUDIO_IO_PLAYBACK_STATE_BUFFERING;
                     ++audio_io->status.playback_rebuffer_count;
+                    ++audio_io->status.total_playback_rebuffer_count;
+                    recovery_status = audio_io->status;
                 } else {
                     recovery_failed = true;
                 }
             }
             xSemaphoreGive(audio_io->lock);
+            if (recovery_status.playback_rebuffer_count != 0U) {
+                ESP_LOGW("audio_io",
+                         "event=playback_rebuffer stream_id=%lu connection_epoch=%llu "
+                         "received_frames=%llu consumed_samples=%llu sample_count=%llu "
+                         "queued_frames=%u count=%lu",
+                         (unsigned long)recovery_status.stream_id,
+                         (unsigned long long)recovery_status.connection_epoch,
+                         (unsigned long long)recovery_status.received_frame_count,
+                         (unsigned long long)recovery_status.consumed_sample_count,
+                         (unsigned long long)recovery_status.sample_count,
+                         (unsigned int)recovery_status.queued_frame_count,
+                         (unsigned long)recovery_status.playback_rebuffer_count);
+            }
             if (recovery_failed) {
                 playback_finish(
                     audio_io,
@@ -1124,6 +1151,11 @@ void audio_io_get_status(audio_io_t *audio_io, audio_io_status_t *status)
     }
     xSemaphoreTake(audio_io->lock, portMAX_DELAY);
     *status = audio_io->status;
+    audio_playback_queue_status_t queue_status = {0};
+    audio_playback_queue_get_status(audio_io->playback_queue, &queue_status);
+    status->total_queued_frame_count = queue_status.total_queued_frame_count;
+    status->playback_frame_high_watermark = queue_status.frame_high_watermark;
+    status->playback_stream_high_watermark = queue_status.stream_high_watermark;
     xSemaphoreGive(audio_io->lock);
 }
 

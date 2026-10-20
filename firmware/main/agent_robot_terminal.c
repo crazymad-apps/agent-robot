@@ -52,6 +52,10 @@ typedef struct {
     uint64_t capture_session_id;
     uint64_t capture_sample_count;
     uint32_t playback_rebuffer_count;
+    uint64_t sample_count;
+    uint64_t received_frame_count;
+    uint64_t consumed_sample_count;
+    size_t queued_frame_count;
 } terminal_audio_io_event_t;
 
 typedef struct {
@@ -278,6 +282,10 @@ static void terminal_audio_io_event(
             .capture_session_id = event->capture_session_id,
             .capture_sample_count = event->capture_sample_count,
             .playback_rebuffer_count = event->playback_rebuffer_count,
+            .sample_count = event->sample_count,
+            .received_frame_count = event->received_frame_count,
+            .consumed_sample_count = event->consumed_sample_count,
+            .queued_frame_count = event->queued_frame_count,
         },
     };
     if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
@@ -309,9 +317,16 @@ static void terminal_interaction_event(
         .type = TERMINAL_EVENT_INTERACTION,
         .value.interaction = *event,
     };
-    if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
+    if (event_queue == NULL) {
         (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
+        return;
     }
+    /*
+     * PTT 边沿是录音状态转换，不是可由状态快照恢复的观察事件。回调只从
+     * terminal_button task 调用，因此可以等待 lifecycle owner 接管；静默丢弃 release
+     * 会让采集一直持续到容量上限。
+     */
+    (void)xQueueSend(event_queue, &terminal_event, portMAX_DELAY);
 }
 
 static void terminal_voice_input_event(
@@ -326,6 +341,20 @@ static void terminal_voice_input_event(
     if (event_queue == NULL || xQueueSend(event_queue, &terminal_event, 0U) != pdTRUE) {
         (void)__atomic_fetch_add(&terminal_event_drop_count, 1U, __ATOMIC_RELAXED);
     }
+}
+
+static const char *playback_end_reason_name(const char *reason)
+{
+    static const char *const known_reasons[] = {
+        "completed", "cancelled", "backpressure", "interrupted_by_input",
+        "replaced", "revoked", "shutdown",
+    };
+    for (size_t index = 0U; index < sizeof(known_reasons) / sizeof(known_reasons[0]); ++index) {
+        if (strcmp(reason, known_reasons[index]) == 0) {
+            return known_reasons[index];
+        }
+    }
+    return "other";
 }
 
 static bool terminal_device_media_event(
@@ -437,8 +466,19 @@ static bool terminal_device_media_event(
             terminal_audio_io,
             event->connection_epoch,
             &event->value.playback_end);
+        ESP_LOGI(TAG,
+                 "event=playback_end_received stream_id=%lu connection_epoch=%llu "
+                 "reason=%s result=%u",
+                 (unsigned long)event->value.playback_end.stream_id,
+                 (unsigned long long)event->connection_epoch,
+                 playback_end_reason_name(event->value.playback_end.reason),
+                 (unsigned int)result);
     }
     if (result != AUDIO_IO_RESULT_OK) {
+        ESP_LOGW(TAG, "event=audio_ingress_rejected type=%u connection_epoch=%llu result=%u",
+                 (unsigned int)event->type,
+                 (unsigned long long)event->connection_epoch,
+                 (unsigned int)result);
         __atomic_store_n(
             &terminal_audio_ingress_last_result,
             (uint32_t)result,
@@ -615,12 +655,17 @@ static void terminal_audio_io_event_process(
         ESP_LOGI(
             TAG,
             "event=audio_playback type=%u result=%u stream_id=%lu rebuffer_count=%lu "
-            "connection_epoch=%llu",
+            "connection_epoch=%llu received_frames=%llu consumed_samples=%llu "
+            "sample_count=%llu queued_frames=%u",
             (unsigned int)event->type,
             (unsigned int)event->result,
             (unsigned long)event->stream_id,
             (unsigned long)event->playback_rebuffer_count,
-            (unsigned long long)event->connection_epoch);
+            (unsigned long long)event->connection_epoch,
+            (unsigned long long)event->received_frame_count,
+            (unsigned long long)event->consumed_sample_count,
+            (unsigned long long)event->sample_count,
+            (unsigned int)event->queued_frame_count);
         return;
     }
 
@@ -855,6 +900,35 @@ static void terminal_resource_snapshot_log(void)
         (unsigned long)heap_caps_get_free_size(external_capabilities),
         (unsigned long)heap_caps_get_minimum_free_size(external_capabilities),
         (unsigned long)heap_caps_get_largest_free_block(external_capabilities));
+
+    audio_io_status_t audio_status = {0};
+    audio_io_get_status(terminal_audio_io, &audio_status);
+    ESP_LOGI(TAG,
+             "event=audio_resource_snapshot playback_state=%u queued_frames=%u "
+             "frame_high_watermark=%u stream_high_watermark=%u rebuffer_total=%lu "
+             "completed=%lu cancelled=%lu failed=%lu capture_state=%u",
+             (unsigned int)audio_status.playback_state,
+             (unsigned int)audio_status.total_queued_frame_count,
+             (unsigned int)audio_status.playback_frame_high_watermark,
+             (unsigned int)audio_status.playback_stream_high_watermark,
+             (unsigned long)audio_status.total_playback_rebuffer_count,
+             (unsigned long)audio_status.completed_playback_count,
+             (unsigned long)audio_status.cancelled_playback_count,
+             (unsigned long)audio_status.failed_playback_count,
+             (unsigned int)audio_status.capture_state);
+    voice_input_status_t input_status = {0};
+    voice_input_get_status(terminal_voice_input, &input_status);
+    ESP_LOGI(TAG,
+             "event=voice_resource_snapshot state=%u queued_frames=%u accepted=%lu "
+             "retransmissions=%lu rejected=%lu cancelled=%lu expired=%lu failed=%lu dropped_frames=%lu",
+             (unsigned int)input_status.state, (unsigned int)input_status.queued_frame_count,
+             (unsigned long)input_status.accepted_segment_count,
+             (unsigned long)input_status.retransmission_count,
+             (unsigned long)input_status.rejected_input_count,
+             (unsigned long)input_status.cancelled_input_count,
+             (unsigned long)input_status.expired_input_count,
+             (unsigned long)input_status.failed_input_count,
+             (unsigned long)input_status.dropped_capture_frame_count);
 
     TaskStatus_t task_statuses[TERMINAL_RESOURCE_MONITOR_MAX_TASKS];
     const UBaseType_t task_count = uxTaskGetSystemState(

@@ -68,6 +68,10 @@ typedef struct {
     uint64_t capture_session_id;
     uint64_t capture_sample_count;
     uint32_t playback_rebuffer_count;
+    uint64_t sample_count;
+    uint64_t received_frame_count;
+    uint64_t consumed_sample_count;
+    size_t queued_frame_count;
 } audio_io_event_t;
 
 /* Events run synchronously on the Audio task and the callback must not block. */
@@ -98,6 +102,10 @@ typedef struct {
     uint64_t consumed_sample_count;
     size_t queued_frame_count;
     size_t queued_playback_count;
+    size_t total_queued_frame_count;
+    size_t playback_frame_high_watermark;
+    size_t playback_stream_high_watermark;
+    uint32_t total_playback_rebuffer_count;
     uint32_t completed_playback_count;
     uint32_t cancelled_playback_count;
     uint32_t failed_playback_count;

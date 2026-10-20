@@ -4,7 +4,10 @@
 >
 > 本文固定 Runtime、Runtime Host 内置 Device Gateway / SpeechService 和终端之间的职责。
 > 当前以 ez-assistant v0.21.0 联调工作树及 device protocol v1.0 为暂时冻结基线；联调发现缺口时
-> 可以同步修改两仓实现与协议 fixtures。S3.0 Voice Demo Host 已冻结归档，不进入正式架构。
+> 可以同步修改两仓实现与协议 fixtures。S3.0 Voice Demo Host 已冻结归档，不进入正式架构。S3.1
+> 已完成正式语音闭环；当前 S3.2 先对正式架构进行整体 Review，再收敛媒体与 Provider；后续加入
+> 本地 UI/控件和双入口恢复矩阵。S3.2 Review 入口见
+> [`versions/S3.2/架构Review.md`](versions/S3.2/架构Review.md)。
 
 ## 1. 设计目标
 
@@ -15,7 +18,7 @@ local-first 边界：
 - ez-assistant Runtime 继续持有全部 Agent 业务状态。
 - 语音和设备能力通过窄接入层适配，不复制第二套 Runtime Host。
 - 断线、重试和进程重启不能导致重复输入或重复朗读。
-- 首版优先完成 PTT 半双工语音闭环。
+- 以已经完成的 PTT 半双工语音闭环为基线，逐步加入本地实体交互和空闲态 WakeNet 入口。
 
 ## 2. 系统上下文
 
@@ -74,6 +77,7 @@ Device Gateway、mDNS 和 SpeechService 是 HostSupervisor 管理的可降级子
 - WSS 设备侧长连接。
 - PCM 收发、缓冲、话语边界和媒体取消。
 - ASR、TTS、重采样和流式分句。
+- 在 Runtime 请求提交前聚合连续 PTT 录音分段，并对分段确认、重传、空输入和超时负责。
 - 将设备意图映射为正式 Runtime Command。
 - 将 Runtime 事件和快照映射为设备状态、文本与音频。
 
@@ -88,6 +92,7 @@ Runtime 队列的事实源。
 - 驱动屏幕、麦克风、功放、按键和 Wi-Fi。
 - 音频 DMA、ring buffer 和网络帧收发。
 - PTT 交互、本地播放中断和状态显示。
+- 滚轮、确认/返回键、本地菜单和持久音量偏好；这些只表达设备本地状态。
 - 连接监督、退避重连和诊断。
 
 终端不直接持有 Runtime Token，不直接调用模型服务，也不理解工具参数、权限规则或完整会话历史。
@@ -182,7 +187,7 @@ Drivers / BSP
 ├── I2S microphone
 ├── I2S amplifier
 ├── SPI display + LVGL port
-├── GPIO buttons
+├── GPIO buttons + rotary encoder
 └── Wi-Fi / NVS
 ```
 
@@ -206,7 +211,8 @@ Drivers / BSP
 | Audio Playback | 从统一下行 PCM FIFO 读取并写 I2S TX | 不等待 UI |
 | Network | 连接、控制消息、音频帧收发 | 不执行耗时音频转换 |
 | Controller | PTT、状态机、超时和取消协调 | 单一状态写入者 |
-| UI | LVGL tick、渲染和动画 | 低于音频关键路径优先级 |
+| Input | 滚轮和按键消抖、旋转方向与长短按事件 | 不直接修改 UI 或媒体状态 |
+| UI | LVGL tick、简洁状态页、菜单和动画 | 只消费 Controller 投影，低于音频关键路径优先级 |
 | Diagnostics | 指标和有界日志 | 不记录完整语音内容 |
 
 数据流：
@@ -215,7 +221,7 @@ Drivers / BSP
 I2S RX → Capture Ring ─┬→ WakeNet → Controller
                        └→ Network TX
 Network RX → Playback PCM FIFO → I2S TX
-Buttons / Wake / Network Events → Controller → UI Projection
+Buttons / Rotary / Wake / Network Events → Controller → UI Projection
 ```
 
 任何网络抖动都不能直接阻塞 I2S DMA；缓冲溢出或欠载必须计数并进入可诊断状态。
@@ -224,6 +230,9 @@ Buttons / Wake / Network Events → Controller → UI Projection
 
 device protocol v1.0 只服务硬件终端与 Runtime Host Device Gateway，不复刻 assistant-protocol。
 正式跨语言真值来自 ez-assistant 的 Rust/Node codec 与 `docs/resources/device-protocol-v1/fixtures/`。
+
+第三方终端的消息字段、接入时序和恢复规则见[通信协议](通信协议.md)，密码学逐字节编码见
+[协议密码学附录](协议密码学附录.md)；这些说明不替代共享 fixtures 与同版本参考实现。
 
 ### 8.1 连接协商
 
@@ -249,7 +258,7 @@ v1.0 的主要语义：
 - `playback_start` / `playback_end` / `playback_cancel`。
 - `ping` / `pong` / `error`。
 
-输入使用客户端生成并可在重试时复用的 `client_input_id`；播放使用 `audio_stream_id`。设备不能通过
+输入使用客户端生成并可在重试时复用的 `client_input_id`；播放使用 `output_id` 和 `stream_id`。设备不能通过
 协议选择任意 Runtime Session，也不能从停止扬声器推断 Runtime Run 已取消。
 
 ### 8.3 音频帧
@@ -284,10 +293,14 @@ disconnected ── connected ──▶ idle
 补充规则：
 
 - 长期架构允许 `listening` 由终端 PTT 或本地唤醒事实驱动，不依赖云端 VAD；S3.1 只实现 PTT，
-  WakeNet 在正式设备链路稳定后的独立版本重新接入。
+  S3.4 才将 WakeNet 重新接入正式设备链路，且只在空闲态工作。
 - `processing` 包含 ASR、Runtime 和 TTS 首包等待，UI 可以展示细分诊断但不增加业务状态。
-- PTT 到达 Host 时立即介入：未发起 Runtime 请求的连续分段归入同一逻辑输入；已存在活动 Run 时，
-  取消该 Run 和剩余播报，再建立新的聚合轮次。
+- PTT 按下事件到达 Host 时立即介入，不只依赖录音结束后的音频：若上一分段仍处于 ASR 或连续输入
+  等待窗口、尚未提交 Runtime，则保留上一分段并把后续分段归入同一逻辑输入；不得因新一段开始而
+  丢弃上一段。只有上一轮已经提交 Runtime 后，新 PTT 才按用户补充/新指令处理，取消该活动 Run
+  与其剩余播报，再建立新的聚合轮次。
+- 本地菜单不形成新的业务状态：滚轮默认调音量，菜单打开后改为移动焦点；确认/返回键处理菜单，
+  PTT 始终退出菜单并优先进入 `listening`。
 - 审批不在终端处理，进入 `needs_attention` 并提示使用桌面端。
 - 任一错误必须能回到 `idle` 或 `disconnected`，不能永久停留在 `processing`。
 
@@ -296,6 +309,8 @@ disconnected ── connected ──▶ idle
 - `client_input_id` 在每个录音分段开始时生成；未收到 `input_segment_accepted` 前重连重试必须保持不变。
 - `input_segment_accepted` 只转移分段 PCM 所有权；`input_accepted` 是合并后的逻辑输入已被 Runtime 接受
   的正式确认。两类确认必须使用独立消息。
+- 连续输入等待窗口由 Host 拥有。窗口内的新 `listen_start` 必须立即刷新聚合决策；终端不在本地
+  猜测哪些分段属于同一 Runtime 请求。
 - Runtime 接受后，设备连接断开不取消 Run。
 - Gateway 重启后从 Runtime/Store 权威状态恢复设备身份与当前 Controller，不用媒体缓存重建 Conversation。
 - 终端重连只恢复设备状态和必要输出，不同步完整 Conversation。
@@ -314,6 +329,8 @@ TTS: text segments → PCM stream / failure
 - 首版 ASR 可以整句处理；接口保留未来流式 ASR 的可能性。
 - Runtime 通过 `speak` 工具显式产生可播报文本；每段最多 120 字符，每个 cycle 最多 20 段。
 - SpeechService 按 FIFO 合成并下发 PCM；`playback_cancel` 清理播放，但不隐式取消 Runtime Run。
+- TTS 分段必须具有可诊断的排队、开始、完成和丢弃事实；设备只在对应播放流有效时接收 PCM，
+  迟到音频不能进入下一轮播放。
 - 所有下行音频在接入层统一为终端格式。
 - ASR/TTS 配置归属 Runtime Host，当前 Provider 为 DashScope；Provider 故障按可降级子系统处理。
 
@@ -363,6 +380,8 @@ PTT、WakeNet、审批提示和 OTA 当前是本地实现或未来扩展，不�
 - 音频上行丢帧、下行 underrun、ring buffer 高水位。
 - ASR、Runtime、TTS 首包和整体延迟。
 - `client_input_id` 提交次数、幂等命中和取消次数。
+- 连续输入聚合的分段数、等待窗口结果、空输入和迟到 ASR 丢弃次数。
+- TTS 分段排队/完成/丢弃数、首段预缓冲和设备播放确认。
 - 当前状态、最后错误码和组件版本。
 
 ### 14.2 必测故障
@@ -386,7 +405,7 @@ PTT、WakeNet、审批提示和 OTA 当前是本地实现或未来扩展，不�
 | ez-assistant v0.21 联调基线 | Host 内置 Device Gateway / SpeechService、当前 Controller Session、设备身份与生命周期 |
 | S3.0 | Demo PCM 链路、ASR/TTS/Agent 可行性、延迟和缓冲证据；不冻结正式协议 |
 | S3.1 | device protocol v1.0 Rust/Node/C codec、fixtures、配对、WSS、PCM 与实机故障恢复 |
-| S3.2 | ASR/TTS Provider 接口、音频格式和分句策略 |
-| S3.3 | Runtime 命令/事件映射、快照恢复和审批行为 |
-| S3.4 | 组合版本、性能基线、故障恢复和 PCB 输入参数 |
+| S3.2 | 整体架构 Review、Provider 生命周期、连续输入聚合、TTS FIFO/取消、媒体诊断和资源趋势 |
+| S3.3 | 简洁屏幕 UI、滚轮、确认/返回键、PTT 优先级和持久设备偏好 |
+| S3.4 | PTT/WakeNet 双入口、组合版本、长稳性能、完整故障恢复和 PCB 输入参数 |
 | S4.0 | PCB 输入冻结前的长稳、资源趋势和极端故障验收 |

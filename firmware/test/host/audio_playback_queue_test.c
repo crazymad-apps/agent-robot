@@ -193,6 +193,15 @@ static void verify_global_frame_capacity(void)
         frame(payload, 12U, AUDIO_PLAYBACK_QUEUE_FRAME_CAPACITY, 0);
     assert(audio_playback_queue_push(queue, TEST_CONNECTION_EPOCH, &overflow) ==
            AUDIO_PLAYBACK_QUEUE_RESULT_FRAME_CAPACITY_EXCEEDED);
+    audio_playback_queue_status_t status = {0};
+    audio_playback_queue_get_status(queue, &status);
+    assert(status.total_queued_frame_count == AUDIO_PLAYBACK_QUEUE_FRAME_CAPACITY);
+    assert(status.frame_high_watermark == AUDIO_PLAYBACK_QUEUE_FRAME_CAPACITY);
+    audio_playback_queue_clear(queue);
+    audio_playback_queue_get_status(queue, &status);
+    assert(status.total_queued_frame_count == 0U);
+    assert(status.frame_high_watermark == AUDIO_PLAYBACK_QUEUE_FRAME_CAPACITY);
+    assert(status.stream_high_watermark == 1U);
     audio_playback_queue_destroy(queue);
 }
 
@@ -217,6 +226,11 @@ static void verify_stream_descriptor_capacity(void)
         200U, "output-overflow", AUDIO_PLAYBACK_QUEUE_SAMPLES_PER_FRAME);
     assert(audio_playback_queue_begin(queue, TEST_CONNECTION_EPOCH, &overflow) ==
            AUDIO_PLAYBACK_QUEUE_RESULT_STREAM_CAPACITY_EXCEEDED);
+    audio_playback_queue_status_t status = {0};
+    audio_playback_queue_get_status(queue, &status);
+    assert(status.stream_high_watermark == AUDIO_PLAYBACK_QUEUE_STREAM_CAPACITY);
+    assert(status.total_queued_frame_count == AUDIO_PLAYBACK_QUEUE_STREAM_CAPACITY);
+    assert(status.queued_frame_count == 1U);
     audio_playback_queue_destroy(queue);
 }
 

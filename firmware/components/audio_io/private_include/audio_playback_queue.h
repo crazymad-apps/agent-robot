@@ -37,6 +37,9 @@ typedef struct {
     size_t queued_frame_count;
     size_t stream_count;
     bool ended;
+    size_t total_queued_frame_count;
+    size_t frame_high_watermark;
+    size_t stream_high_watermark;
 } audio_playback_queue_status_t;
 
 audio_playback_queue_result_t audio_playback_queue_create(audio_playback_queue_t **queue);

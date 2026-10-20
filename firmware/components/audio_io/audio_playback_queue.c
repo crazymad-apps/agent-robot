@@ -27,6 +27,8 @@ struct audio_playback_queue {
     size_t queued_frame_count;
     size_t stream_head;
     size_t stream_count;
+    size_t frame_high_watermark;
+    size_t stream_high_watermark;
 };
 
 static void secure_zero(void *memory, size_t size)
@@ -145,6 +147,9 @@ audio_playback_queue_result_t audio_playback_queue_begin(
     };
     memcpy(stream->output_id, playback_start->output_id, sizeof(stream->output_id));
     ++queue->stream_count;
+    if (queue->stream_count > queue->stream_high_watermark) {
+        queue->stream_high_watermark = queue->stream_count;
+    }
     return AUDIO_PLAYBACK_QUEUE_RESULT_OK;
 }
 
@@ -179,6 +184,9 @@ audio_playback_queue_result_t audio_playback_queue_push(
     memcpy(&queue->storage[frame_tail * DEVICE_PCM_PAYLOAD_BYTES], frame->payload,
            DEVICE_PCM_PAYLOAD_BYTES);
     ++queue->queued_frame_count;
+    if (queue->queued_frame_count > queue->frame_high_watermark) {
+        queue->frame_high_watermark = queue->queued_frame_count;
+    }
     ++stream->received_frame_count;
     return AUDIO_PLAYBACK_QUEUE_RESULT_OK;
 }
@@ -324,7 +332,12 @@ void audio_playback_queue_get_status(
     if (queue == NULL || status == NULL) {
         return;
     }
-    *status = (audio_playback_queue_status_t){0};
+    /* Lifetime peaks survive queue drains and cancellation, including idle snapshots. */
+    *status = (audio_playback_queue_status_t){
+        .total_queued_frame_count = queue->queued_frame_count,
+        .frame_high_watermark = queue->frame_high_watermark,
+        .stream_high_watermark = queue->stream_high_watermark,
+    };
     const audio_playback_stream_t *stream = const_head_stream(queue);
     if (stream == NULL) {
         return;
@@ -338,6 +351,9 @@ void audio_playback_queue_get_status(
         .queued_frame_count = stream_queued_frame_count(stream),
         .stream_count = queue->stream_count,
         .ended = stream->ended,
+        .total_queued_frame_count = queue->queued_frame_count,
+        .frame_high_watermark = queue->frame_high_watermark,
+        .stream_high_watermark = queue->stream_high_watermark,
     };
     memcpy(status->output_id, stream->output_id, sizeof(status->output_id));
 }

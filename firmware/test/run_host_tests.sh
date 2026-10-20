@@ -7,6 +7,7 @@ BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-robot-host-tests.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
 "$FIRMWARE_DIR/tools/check_third_party_sources.sh"
+python3 "$FIRMWARE_DIR/test/host/media_diagnostics_test.py"
 
 cc \
     -std=c11 \
@@ -178,6 +179,21 @@ cc \
     -o "$BUILD_DIR/audio_playback_queue_test"
 
 "$BUILD_DIR/audio_playback_queue_test"
+
+cc \
+    -std=c11 -Wall -Wextra -Werror \
+    -I"$FIRMWARE_DIR/test/host/audio_io_support" \
+    -I"$FIRMWARE_DIR/components/audio_io/include" \
+    -I"$FIRMWARE_DIR/components/audio_io/private_include" \
+    -I"$FIRMWARE_DIR/components/device_protocol/include" \
+    -I"$CJSON_DIR" \
+    "$FIRMWARE_DIR/components/audio_io/audio_io.c" \
+    "$FIRMWARE_DIR/components/audio_io/audio_playback_queue.c" \
+    "$FIRMWARE_DIR/components/audio_io/audio_pcm_conversion.c" \
+    "$FIRMWARE_DIR/test/host/audio_io_playback_test.c" \
+    -o "$BUILD_DIR/audio_io_playback_test"
+
+"$BUILD_DIR/audio_io_playback_test"
 
 cc \
     -std=c11 \
